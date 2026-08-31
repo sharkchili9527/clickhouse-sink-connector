@@ -243,6 +243,10 @@ public class MySqlDDLParserListenerImpl extends MySQLDDLParserBaseListener {
                 this.query.append(String.format(Constants.DROP_DATABASE, overrideDatabaseName));
             }
         }
+        if (config.getBoolean(ClickHouseSinkConnectorConfigVariables
+                .AUTO_CREATE_TABLES_REPLICATED.toString())) {
+            this.query.append(" ON CLUSTER `{cluster}`");
+        }
     }
 
     /**
@@ -1447,6 +1451,10 @@ public class MySqlDDLParserListenerImpl extends MySQLDDLParserBaseListener {
                 this.query.append(Constants.IF_EXISTS);
             }
         }
+        if (config.getBoolean(ClickHouseSinkConnectorConfigVariables
+                .AUTO_CREATE_TABLES_REPLICATED.toString())) {
+            this.query.append(" ON CLUSTER `{cluster}`");
+        }
     }
 
     /**
@@ -1507,6 +1515,10 @@ public class MySqlDDLParserListenerImpl extends MySQLDDLParserBaseListener {
                     this.query.append(String.format(Constants.TRUNCATE_TABLE, databaseName + "." + tableName));
                 }
             }
+        }
+        if (config.getBoolean(ClickHouseSinkConnectorConfigVariables
+                .AUTO_CREATE_TABLES_REPLICATED.toString())) {
+            this.query.append(" ON CLUSTER `{cluster}`");
         }
     }
 }

@@ -287,6 +287,22 @@ public class MySqlDDLParserListenerImplTest {
         Assert.assertTrue(clickHouseQuery.toString().equalsIgnoreCase("DROP DATABASE IF EXISTS test2"));
         log.info("Drop database " + clickHouseQuery);
     }
+
+    @Test
+    public void testDropDatabaseReplicatedAddsOnCluster() {
+        StringBuffer clickHouseQuery = new StringBuffer();
+        Map<String, String> config = new HashMap<>();
+        config.put(ClickHouseSinkConnectorConfigVariables
+                .AUTO_CREATE_TABLES_REPLICATED.toString(), "true");
+
+        MySQLDDLParserService parser = new MySQLDDLParserService(
+                new ClickHouseSinkConnectorConfig(config), "test");
+        parser.parseSql("DROP DATABASE `test`", "test", clickHouseQuery);
+
+        Assert.assertTrue(
+                "DROP DATABASE IF EXISTS test ON CLUSTER `{cluster}`"
+                        .equalsIgnoreCase(clickHouseQuery.toString()));
+    }
     @Test
     public void testCreateTableWithReplicatedReplacingMergeTree() {
 
@@ -867,6 +883,22 @@ public class MySqlDDLParserListenerImplTest {
     }
 
     @Test
+    public void truncateTableReplicatedAddsOnCluster() {
+        StringBuffer clickHouseQuery = new StringBuffer();
+        Map<String, String> config = new HashMap<>();
+        config.put(ClickHouseSinkConnectorConfigVariables
+                .AUTO_CREATE_TABLES_REPLICATED.toString(), "true");
+
+        MySQLDDLParserService parser = new MySQLDDLParserService(
+                new ClickHouseSinkConnectorConfig(config), "employees");
+        parser.parseSql("TRUNCATE TABLE add_test", "table1", clickHouseQuery);
+
+        Assert.assertTrue(
+                "TRUNCATE TABLE employees.add_test ON CLUSTER `{cluster}`"
+                        .equalsIgnoreCase(clickHouseQuery.toString()));
+    }
+
+    @Test
     public void dropTableWithQualifiedName() {
         StringBuffer clickHouseQuery = new StringBuffer();
 
@@ -915,6 +947,22 @@ public class MySqlDDLParserListenerImplTest {
         mySQLDDLParserService.parseSql(sql, "table1", clickHouseQuery);
         String expectedSql = "DROP TABLE IF EXISTS employees.add_test";
         Assert.assertTrue(clickHouseQuery.toString().equalsIgnoreCase(expectedSql));
+    }
+
+    @Test
+    public void dropTableReplicatedAddsOnCluster() {
+        StringBuffer clickHouseQuery = new StringBuffer();
+        Map<String, String> config = new HashMap<>();
+        config.put(ClickHouseSinkConnectorConfigVariables
+                .AUTO_CREATE_TABLES_REPLICATED.toString(), "true");
+
+        MySQLDDLParserService parser = new MySQLDDLParserService(
+                new ClickHouseSinkConnectorConfig(config), "employees");
+        parser.parseSql("DROP TABLE IF EXISTS add_test", "table1", clickHouseQuery);
+
+        Assert.assertTrue(
+                "DROP TABLE IF EXISTS employees.add_test ON CLUSTER `{cluster}`"
+                        .equalsIgnoreCase(clickHouseQuery.toString()));
     }
 
     @Test

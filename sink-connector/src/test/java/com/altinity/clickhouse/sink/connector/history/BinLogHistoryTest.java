@@ -48,5 +48,21 @@ public class BinLogHistoryTest {
         //Assert.assertTrue(result.contains("ENGINE = MergeTree()"));
     }
 
+    @Test
+    public void testCreateHistoryTableSyntaxForLegacyClickHouse() {
+        String result = binLogHistory.createHistoryTableSyntax(
+                "test_history",
+                "test_db",
+                30,
+                ZoneId.of("UTC"),
+                false
+        );
+
+        Assert.assertTrue(result.contains(
+                "ENGINE = ReplacingMergeTree(_version)"));
+        Assert.assertFalse(result.contains(
+                "ReplacingMergeTree(_version, is_deleted)"));
+    }
+
 
 }

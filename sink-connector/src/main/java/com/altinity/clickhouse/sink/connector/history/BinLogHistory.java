@@ -30,6 +30,7 @@ public class BinLogHistory {
     public static final String ORDER_BY = "ORDER BY";
     public static final String ORDER_BY_TUPLE = "ORDER BY tuple()";
     public static final String ENGINE_REPLACING_MERGE_TREE = "ENGINE = ReplacingMergeTree(_version, is_deleted)";
+    public static final String ENGINE_LEGACY_REPLACING_MERGE_TREE = "ENGINE = ReplacingMergeTree(_version)";
     public static final String PARTITION_BY = " PARTITION BY toDate(`";
     public static final String TTL_PREFIX = " TTL toDate(`";
     public static final String TO_INTERVAL_DAY = "`) + toIntervalDay(";
@@ -115,6 +116,19 @@ public class BinLogHistory {
                                            String databaseName,
                                            int ttlDays,
                                            ZoneId serverTimeZone) {
+        return createHistoryTableSyntax(historyTableName, databaseName,
+                ttlDays, serverTimeZone, true);
+    }
+
+    /**
+     * Builds history-table DDL for the target ClickHouse engine version.
+     */
+    public String createHistoryTableSyntax(
+                                           String historyTableName,
+                                           String databaseName,
+                                           int ttlDays,
+                                           ZoneId serverTimeZone,
+                                           boolean newReplacingMergeTree) {
 
         StringBuilder sb = new StringBuilder();
         sb.append(CREATE_TABLE).append(" ").append(IF_NOT_EXISTS)
@@ -136,7 +150,9 @@ public class BinLogHistory {
         sb.append(columnDefinitions);
         sb.append(",`").append(DB_TIME_COLUMN).append("` ").append(DB_TIME_COLUMN_DATA_TYPE);
 
-        sb.append(") ").append(ENGINE_REPLACING_MERGE_TREE);
+        sb.append(") ").append(newReplacingMergeTree
+                ? ENGINE_REPLACING_MERGE_TREE
+                : ENGINE_LEGACY_REPLACING_MERGE_TREE);
 
         // ORDER BY gtid
         sb.append(" ").append(ORDER_BY).append("(").append(SERVER_ID_COLUMN).append(",")

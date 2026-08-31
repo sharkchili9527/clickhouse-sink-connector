@@ -33,4 +33,4 @@ for both **Debezium** and **Sink**
 | thread.pool.size                 | 10        | Number of threads that is used to connect to ClickHouse                                                                                                               |
 | auto.create.tables               | false     | Sink connector will create tables in ClickHouse (If it does not exist)                                                                                                |
 | snowflake.id                     | true      | Uses SnowFlake ID(Timestamp + GTID) as the version column for ReplacingMergeTree                                                                                      |
-| replacingmergetree.delete.column | "sign"    | Column used as the sign column for ReplacingMergeTree.
+| replacingmergetree.delete.column | empty     | Delete-marker column for ReplacingMergeTree. When empty, the connector uses `_sign` on ClickHouse versions before 23.2 and `is_deleted` on 23.2+.

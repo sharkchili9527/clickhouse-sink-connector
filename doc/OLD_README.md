@@ -308,7 +308,7 @@ mvn install -DskipTests=true
 | thread.pool.size                 | 10        | Number of threads that is used to connect to ClickHouse                                                                                                               |
 | auto.create.tables               | false     | Sink connector will create tables in ClickHouse (If it does not exist)                                                                                                |
 | snowflake.id                     | true      | Uses SnowFlake ID(Timestamp + GTID) as the version column for ReplacingMergeTree                                                                                      |
-| replacingmergetree.delete.column | "sign"    | Column used as the sign column for ReplacingMergeTree.
+| replacingmergetree.delete.column | empty     | Delete-marker column for ReplacingMergeTree. When empty, the connector uses `_sign` on ClickHouse versions before 23.2 and `is_deleted` on 23.2+.
 
 ## ClickHouse Loader(Load Data from MySQL to CH for Initial Load)
 [Clickhouse Loader](sink-connector/python/README.md) is a program that loads data dumped in MySQL into a CH database compatible the sink connector (ReplacingMergeTree with virtual columns _version and _sign/is_deleted)

@@ -105,6 +105,26 @@ public class QueryFormatterTest {
     }
 
     @Test
+    public void testResolvedCustomDeleteColumnIsIncludedInInsert() {
+        QueryFormatter qf = new QueryFormatter();
+        Map<String, String> columns = new LinkedHashMap<>();
+        columns.put("id", "Int32");
+        columns.put("__sign", "Int8");
+        columns.put("_version", "UInt64");
+
+        List<Field> sourceFields = new ArrayList<>();
+        sourceFields.add(new Field("id", 0, Schema.INT32_SCHEMA));
+
+        MutablePair<String, Map<String, Integer>> response =
+                qf.getInsertQueryUsingInputFunction(
+                        "products", sourceFields, columns, false, false,
+                        null, "employees", "__sign");
+
+        Assert.assertTrue(response.left.contains("`__sign`"));
+        Assert.assertTrue(response.right.containsKey("__sign"));
+    }
+
+    @Test
     public void testGetInsertQueryForUpdate() {
         QueryFormatter qf = new QueryFormatter();
 
@@ -381,5 +401,38 @@ public class QueryFormatterTest {
         Assert.assertEquals("Query should have one UNION ALL for two SELECTs", 1, unionAllCount);
         Assert.assertTrue("Column index map should be empty",
                 columnIndexMap.isEmpty());
+    }
+
+    @Test
+    public void testLegacyHistoryQueriesUseSignMarkerSemantics() {
+        QueryFormatter qf = new QueryFormatter();
+        Map<String, String> columns = new LinkedHashMap<>();
+        columns.put("id", "Int32");
+        columns.put(ClickHouseDbConstants.DELETED_FROM_TIME_COLUMN, "DateTime");
+        columns.put(ClickHouseDbConstants.DELETED_TIME_COLUMN, "DateTime");
+        columns.put(ClickHouseDbConstants.OPERATION_COLUMN, "String");
+        columns.put(ClickHouseDbConstants.SIGN_COLUMN, "Int8");
+        columns.put(ClickHouseDbConstants.VERSION_COLUMN, "UInt64");
+
+        MutablePair<String, Map<String, Integer>> update =
+                qf.getInsertQueryForUpdate(
+                        "history.orders", columns, "id", 1,
+                        "2100-01-01 00:00:00", "2026-01-01 00:00:00",
+                        100L, ClickHouseConverter.CDC_OPERATION.UPDATE, "UTC",
+                        ClickHouseDbConstants.SIGN_COLUMN, false);
+        Assert.assertTrue(update.left.contains("`_sign` > 0"));
+        Assert.assertTrue(update.left.contains("1 as `_sign`"));
+        Assert.assertTrue(update.left.contains("-1 as `_sign`"));
+        Assert.assertFalse(update.left.contains("is_deleted"));
+
+        MutablePair<String, Map<String, Integer>> delete =
+                qf.getInsertQueryForDelete(
+                        "history.orders", columns, "id", 1,
+                        "2100-01-01 00:00:00", "2026-01-01 00:00:00",
+                        100L, "UTC",
+                        ClickHouseDbConstants.SIGN_COLUMN, false);
+        Assert.assertTrue(delete.left.contains("`_sign` > 0"));
+        Assert.assertTrue(delete.left.contains("-1"));
+        Assert.assertFalse(delete.left.contains("is_deleted"));
     }
 }

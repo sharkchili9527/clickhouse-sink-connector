@@ -5,10 +5,10 @@ Sink Connector will attempt to read the `engine_full` column from system.tables 
 identify the `engine` and the `ver` column.
 
 ### Updates:
-For **inserts**, record will be inserted with `sign` set to `1`
+For **inserts**, record will be inserted with `_sign` set to `1`
 For **updates**, a new row will be inserted with a higher **version** value and on merge, clickhouse will drop the row with the older **version** value.
-For **deletes**, a new record will be inserted with `sign` set to `-1` and a higher **version** value. Clickhouse will drop the row with the older **version** value. 
-A Row policy can be created to hide all the rows with `sign` set to -1.
+For **deletes**, a new record will be inserted with `_sign` set to `-1` and a higher **version** value. ClickHouse 22.8-compatible tables keep this marker as an ordinary signed column; query the table with `FINAL` and filter `_sign > 0` to hide deleted rows.
+A Row policy can be created to hide all the rows with `_sign` set to -1.
 ```
 create row policy table on db.table using sign != -1 to all;
 ```
@@ -89,7 +89,10 @@ For updates, only the `after` record will be inserted with `version` set to time
 After merging, ClickHouse will drop the previous insert since the update `version` column value is greater
 than the insert record `version` value.
 
-For Deletes, the user provided `replacingmergetree.delete.column` will be set to `-1`
+For legacy ClickHouse versions, the connector defaults
+`replacingmergetree.delete.column` to `_sign` and sets it to `-1` for DELETE
+events and `1` for INSERT/UPDATE events. For ClickHouse 23.2 and newer, the
+default is the native `is_deleted` flag.
 
 
 ## Other table Engines(MergeTree ...)

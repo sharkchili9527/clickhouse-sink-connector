@@ -491,6 +491,47 @@ public class QueryFormatter {
         return sb.toString();
     }
 
+    private String resolveHistoryDeleteMarker(
+            Map<String, String> columnNameToDataTypeMap,
+            String requestedMarker) {
+        if (requestedMarker != null && !requestedMarker.trim().isEmpty()) {
+            for (String columnName : columnNameToDataTypeMap.keySet()) {
+                if (columnName.equalsIgnoreCase(requestedMarker.trim())) {
+                    return columnName;
+                }
+            }
+        }
+        for (String columnName : columnNameToDataTypeMap.keySet()) {
+            if (columnName.equalsIgnoreCase(
+                    ClickHouseDbConstants.IS_DELETED_COLUMN)) {
+                return columnName;
+            }
+        }
+        for (String columnName : columnNameToDataTypeMap.keySet()) {
+            if (columnName.equalsIgnoreCase(
+                    ClickHouseDbConstants.SIGN_COLUMN)) {
+                return columnName;
+            }
+        }
+        return null;
+    }
+
+    private boolean isHistoryDeleteMarker(String columnName,
+                                          String markerColumn) {
+        return markerColumn != null
+                && columnName.equalsIgnoreCase(markerColumn);
+    }
+
+    private String historyDeleteMarkerCondition(String markerColumn,
+                                                boolean nativeDeleteMarker) {
+        if (markerColumn == null) {
+            return "";
+        }
+        return nativeDeleteMarker
+                ? " AND `" + markerColumn + "` = 0"
+                : " AND `" + markerColumn + "` > 0";
+    }
+
     /**
      * Builds a 2-SELECT UNION ALL query for replication history DELETE (SCD2 delete pattern).
      * 1. First SELECT: Close the current active row (_valid_to = delete_timestamp, is_deleted = 0).
@@ -508,10 +549,42 @@ public class QueryFormatter {
                                           String binlogRecordTimestamp,
                                           long version,
                                           String serverTimeZone) {
+        return getInsertQueryForDelete(tableName, columnNameToDataTypeMap,
+                primaryKeyColumnName, primaryKeyValue, validToMax,
+                binlogRecordTimestamp, version, serverTimeZone, null, false);
+    }
+
+    /**
+     * Builds a history DELETE query using the target table's actual marker.
+     *
+     * @param deleteMarkerColumn the marker column in the target table
+     * @param nativeDeleteMarker true for the native UInt8 is_deleted semantics
+     */
+    public MutablePair<String, Map<String, Integer>> getInsertQueryForDelete(
+                                          String tableName,
+                                          Map<String, String> columnNameToDataTypeMap,
+                                          String primaryKeyColumnName,
+                                          Object primaryKeyValue,
+                                          String validToMax,
+                                          String binlogRecordTimestamp,
+                                          long version,
+                                          String serverTimeZone,
+                                          String deleteMarkerColumn,
+                                          boolean nativeDeleteMarker) {
         StringBuilder colNamesDelimited = new StringBuilder();
         StringBuilder colNamesDelimitedForFirstSelect = new StringBuilder();
         StringBuilder colNamesDelimitedForSecondSelect = new StringBuilder();
         Map<String, Integer> colNameToIndexMap = new HashMap<>();
+        String markerColumn = resolveHistoryDeleteMarker(
+                columnNameToDataTypeMap, deleteMarkerColumn);
+        boolean useNativeDeleteMarker = markerColumn != null
+                && (deleteMarkerColumn != null
+                && !deleteMarkerColumn.trim().isEmpty()
+                ? nativeDeleteMarker
+                : markerColumn.equalsIgnoreCase(
+                        ClickHouseDbConstants.IS_DELETED_COLUMN));
+        int activeMarkerValue = useNativeDeleteMarker ? 0 : 1;
+        int deletedMarkerValue = useNativeDeleteMarker ? 1 : -1;
 
         for (Map.Entry<String, String> entry : columnNameToDataTypeMap.entrySet()) {
             String columnName = "`" + entry.getKey() + "`";
@@ -524,8 +597,8 @@ public class QueryFormatter {
             String selectExpr;
             if (columnName.equalsIgnoreCase(ClickHouseDbConstants.DELETED_TIME_COLUMN)) {
                 selectExpr = String.format("toDateTime('%s', '%s')", binlogRecordTimestamp, serverTimeZone);
-            } else if (columnName.equalsIgnoreCase(ClickHouseDbConstants.IS_DELETED_COLUMN)) {
-                selectExpr = "0";
+            } else if (isHistoryDeleteMarker(entry.getKey(), markerColumn)) {
+                selectExpr = Integer.toString(activeMarkerValue);
             } else if (columnName.equalsIgnoreCase(ClickHouseDbConstants.VERSION_COLUMN)) {
                 selectExpr = String.format("%d", version);
             } else {
@@ -544,8 +617,8 @@ public class QueryFormatter {
                 selectExpr = String.format("toDateTime('%s', '%s')", validToMax, serverTimeZone);
             } else if (columnName.equalsIgnoreCase(ClickHouseDbConstants.OPERATION_COLUMN)) {
                 selectExpr = "'D'";
-            } else if (columnName.equalsIgnoreCase(ClickHouseDbConstants.IS_DELETED_COLUMN)) {
-                selectExpr = "1";
+            } else if (isHistoryDeleteMarker(entry.getKey(), markerColumn)) {
+                selectExpr = Integer.toString(deletedMarkerValue);
             } else if (columnName.equalsIgnoreCase(ClickHouseDbConstants.VERSION_COLUMN)) {
                 selectExpr = String.format("%d", version + 1);
             } else {
@@ -561,11 +634,11 @@ public class QueryFormatter {
         String primaryKeyDataType = columnNameToDataTypeMap.get(primaryKeyColumnName);
         String formattedPrimaryKeyValue = formatValueForSql(primaryKeyValue, primaryKeyDataType);
         String tableWithBackTicks = "`" + tableName + "`";
-        String isDeletedCondition = columnNameToDataTypeMap.containsKey(
-                ClickHouseDbConstants.IS_DELETED_COLUMN) ? " AND `is_deleted` = 0" : "";
+        String deleteMarkerCondition = historyDeleteMarkerCondition(
+                markerColumn, useNativeDeleteMarker);
 
         String whereClause = String.format("WHERE `%s`=%s AND `_valid_to` = toDateTime('%s', '%s')%s",
-                primaryKeyColumnName, formattedPrimaryKeyValue, validToMax, serverTimeZone, isDeletedCondition);
+                primaryKeyColumnName, formattedPrimaryKeyValue, validToMax, serverTimeZone, deleteMarkerCondition);
 
         String query = String.format(
             "INSERT INTO %s(%s) SELECT %s FROM %s FINAL %s UNION ALL SELECT %s FROM %s FINAL %s",
@@ -594,6 +667,30 @@ public class QueryFormatter {
                                           long version,
                                           ClickHouseConverter.CDC_OPERATION cdcOperation,
                                           String serverTimeZone) {
+        return getInsertQueryForUpdate(tableName, columnNameToDataTypeMap,
+                primaryKeyColumnName, primaryKeyValue, validToMax,
+                binlogRecordTimestamp, version, cdcOperation, serverTimeZone,
+                null, false);
+    }
+
+    /**
+     * Builds a history UPDATE query using the target table's actual marker.
+     *
+     * @param deleteMarkerColumn the marker column in the target table
+     * @param nativeDeleteMarker true for the native UInt8 is_deleted semantics
+     */
+    public MutablePair<String, Map<String, Integer>> getInsertQueryForUpdate(
+                                                                             String tableName,
+                                                                             Map<String, String> columnNameToDataTypeMap,
+                                          String primaryKeyColumnName,
+                                          Object primaryKeyValue,
+                                          String validToMax,
+                                          String binlogRecordTimestamp,
+                                          long version,
+                                          ClickHouseConverter.CDC_OPERATION cdcOperation,
+                                          String serverTimeZone,
+                                          String deleteMarkerColumn,
+                                          boolean nativeDeleteMarker) {
 
         StringBuilder colNamesDelimited = new StringBuilder();
         StringBuilder colNamesDelimitedForFirstSelect = new StringBuilder();
@@ -603,6 +700,16 @@ public class QueryFormatter {
         // Map to track which columns need parameter binding
         Map<String, Integer> colNameToIndexMap = new HashMap<>();
         int parameterIndex = 1;
+        String markerColumn = resolveHistoryDeleteMarker(
+                columnNameToDataTypeMap, deleteMarkerColumn);
+        boolean useNativeDeleteMarker = markerColumn != null
+                && (deleteMarkerColumn != null
+                && !deleteMarkerColumn.trim().isEmpty()
+                ? nativeDeleteMarker
+                : markerColumn.equalsIgnoreCase(
+                        ClickHouseDbConstants.IS_DELETED_COLUMN));
+        int activeMarkerValue = useNativeDeleteMarker ? 0 : 1;
+        int deletedMarkerValue = useNativeDeleteMarker ? 1 : -1;
 
         // Loop over each column to build column list
         for (Map.Entry<String, String> entry : columnNameToDataTypeMap.entrySet()) {
@@ -620,9 +727,10 @@ public class QueryFormatter {
                 // CLOSE the record by setting _valid_to to binlog timestamp (not now())
                 // Using binlog timestamp ensures _valid_to matches the next record's _valid_from
                 selectExpr = String.format("toDateTime('%s', '%s')", binlogRecordTimestamp, serverTimeZone);
-            } else if (columnName.equalsIgnoreCase(ClickHouseDbConstants.IS_DELETED_COLUMN)) {
-                // Keep is_deleted = 0 (this is historical, not deleted)
-                selectExpr = String.format("0 as `%s`", columnName);
+            } else if (isHistoryDeleteMarker(columnName, markerColumn)) {
+                // Keep the current row active; legacy _sign uses +1.
+                selectExpr = String.format("%d as `%s`",
+                        activeMarkerValue, columnName);
             } else if (columnName.equalsIgnoreCase(ClickHouseDbConstants.VERSION_COLUMN)) {
                 // Update version for ReplacingMergeTree to recognize this as newer
                 selectExpr = String.format("%d as `%s`", version, columnName);
@@ -652,9 +760,10 @@ public class QueryFormatter {
                 // HARDCODE version+1 to ensure correct version regardless of fieldMapper
                 selectExpr = String.format("%d as `%s`", version + 1, columnName);
                 // NO parameter binding - hardcoded in SQL
-            } else if (columnName.equalsIgnoreCase(ClickHouseDbConstants.IS_DELETED_COLUMN)) {
-                // HARDCODE is_deleted = 0 for new active record
-                selectExpr = String.format("0 as `%s`", columnName);
+            } else if (isHistoryDeleteMarker(columnName, markerColumn)) {
+                // The after image is active; legacy _sign uses +1.
+                selectExpr = String.format("%d as `%s`",
+                        activeMarkerValue, columnName);
                 // NO parameter binding - hardcoded in SQL
             } else if (columnName.equalsIgnoreCase(ClickHouseDbConstants.OPERATION_COLUMN)) {
                 // HARDCODE operation type
@@ -681,9 +790,10 @@ public class QueryFormatter {
             } else if (columnName.equalsIgnoreCase(ClickHouseDbConstants.DELETED_TIME_COLUMN)) {
                 // Set _valid_to to binlog timestamp - when this record was superseded
                 selectExpr = String.format("toDateTime('%s', '%s') as `%s`", binlogRecordTimestamp, serverTimeZone, columnName);
-            } else if (columnName.equalsIgnoreCase(ClickHouseDbConstants.IS_DELETED_COLUMN)) {
-                // Mark as deleted (is_deleted = 1)
-                selectExpr = String.format("1 as `%s`", columnName);
+            } else if (isHistoryDeleteMarker(columnName, markerColumn)) {
+                // Retire the before image; legacy _sign uses -1.
+                selectExpr = String.format("%d as `%s`",
+                        deletedMarkerValue, columnName);
             } else if (columnName.equalsIgnoreCase(ClickHouseDbConstants.OPERATION_COLUMN)) {
                 // Set operation type
                 selectExpr = String.format("'%s' as `%s`", cdcOperation.getOperation(), columnName);
@@ -709,9 +819,8 @@ public class QueryFormatter {
 
         String tableWithBackTicks = "`" + tableName + "`";
         
-        // Build is_deleted condition only if the column exists in the table
-        String isDeletedCondition = columnNameToDataTypeMap.containsKey(
-                ClickHouseDbConstants.IS_DELETED_COLUMN) ? " AND `is_deleted` = 0" : "";
+        String deleteMarkerCondition = historyDeleteMarkerCondition(
+                markerColumn, useNativeDeleteMarker);
 
         // Build the query with three SELECTs:
         // 1. Close existing record (from table with WHERE) - uses FINAL to get merged view
@@ -732,7 +841,7 @@ public class QueryFormatter {
             formattedPrimaryKeyValue, 
             validToMax,
             serverTimeZone,
-            isDeletedCondition,
+            deleteMarkerCondition,
             colNamesDelimitedForSecondSelect,
             colNamesDelimitedForThirdSelect,
             tableWithBackTicks,
@@ -740,7 +849,7 @@ public class QueryFormatter {
             formattedPrimaryKeyValue,
             validToMax,
             serverTimeZone,
-            isDeletedCondition
+            deleteMarkerCondition
         );
 
         MutablePair<String, Map<String, Integer>> response = new MutablePair<>();

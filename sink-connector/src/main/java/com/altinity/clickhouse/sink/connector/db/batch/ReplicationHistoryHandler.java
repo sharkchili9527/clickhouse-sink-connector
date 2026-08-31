@@ -41,13 +41,15 @@ public class ReplicationHistoryHandler {
     private final DBMetadata dbMetadata;
     private final ZoneId sourceTimeZone;
     private final ZoneId serverTimeZone;
+    private final String deleteMarkerColumn;
+    private final boolean nativeDeleteMarker;
     /**
      * Creates a new ReplicationHistoryHandler with default dependencies (creates its own {@link DBMetadata}).
      *
      * @param config The connector configuration
      */
     public ReplicationHistoryHandler(ClickHouseSinkConnectorConfig config, ZoneId serverTimeZone) {
-        this(config, serverTimeZone, new DBMetadata(config));
+        this(config, serverTimeZone, new DBMetadata(config), null, true);
     }
 
     /**
@@ -60,8 +62,18 @@ public class ReplicationHistoryHandler {
      * @param dbMetadata Shared database metadata (e.g. same instance as {@code PreparedStatementExecutor}'s batch metadata)
      */
     public ReplicationHistoryHandler(ClickHouseSinkConnectorConfig config, ZoneId serverTimeZone, DBMetadata dbMetadata) {
+        this(config, serverTimeZone, dbMetadata, null, true);
+    }
+
+    public ReplicationHistoryHandler(ClickHouseSinkConnectorConfig config,
+                                     ZoneId serverTimeZone,
+                                     DBMetadata dbMetadata,
+                                     String deleteMarkerColumn,
+                                     boolean nativeDeleteMarker) {
         this.queryFormatter = new QueryFormatter();
         this.dbMetadata = dbMetadata;
+        this.deleteMarkerColumn = deleteMarkerColumn;
+        this.nativeDeleteMarker = nativeDeleteMarker;
 
         String sourceTz = "UTC";
         if (config.getString(ClickHouseSinkConnectorConfigVariables.SOURCE_DATETIME_TIMEZONE.toString()) != null) {
@@ -86,6 +98,8 @@ public class ReplicationHistoryHandler {
         this.dbMetadata = dbMetadata;
         this.sourceTimeZone = ZoneId.of("UTC");
         this.serverTimeZone = ZoneId.of("UTC");
+        this.deleteMarkerColumn = null;
+        this.nativeDeleteMarker = true;
     }
 
     /**
@@ -150,7 +164,9 @@ public class ReplicationHistoryHandler {
                 params.getBinlogRecordTimestamp(),
                 params.getVersion(),
                 params.getCdcOperation(),
-                serverTimeZone.getId()
+                serverTimeZone.getId(),
+                deleteMarkerColumn,
+                nativeDeleteMarker
         );
     }
 
@@ -176,7 +192,9 @@ public class ReplicationHistoryHandler {
                 params.getValidToMax(),
                 params.getBinlogRecordTimestamp(),
                 params.getVersion(),
-                serverTimeZone.getId()
+                serverTimeZone.getId(),
+                deleteMarkerColumn,
+                nativeDeleteMarker
         );
     }
 
@@ -326,4 +344,3 @@ public class ReplicationHistoryHandler {
         }
     }
 }
-

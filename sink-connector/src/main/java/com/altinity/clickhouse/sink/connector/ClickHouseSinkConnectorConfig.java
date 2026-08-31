@@ -13,9 +13,12 @@ import org.apache.kafka.common.config.ConfigDef.Type;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
+import java.util.Collection;
 import java.util.Map;
 
 import static com.altinity.clickhouse.sink.connector.ClickHouseSinkConnectorConfigVariables.ERROR_TABLE_NAME;
+import static com.altinity.clickhouse.sink.connector.db.ClickHouseDbConstants.IS_DELETED_COLUMN;
+import static com.altinity.clickhouse.sink.connector.db.ClickHouseDbConstants.SIGN_COLUMN;
 
 /**
  * Connector configuration definition.
@@ -204,6 +207,83 @@ public class ClickHouseSinkConnectorConfig extends AbstractConfig {
         } else {
             return null;
         }
+    }
+
+    /**
+     * Resolves the ReplacingMergeTree delete-marker column.
+     *
+     * <p>ClickHouse versions before 23.2 do not support the
+     * {@code ReplacingMergeTree(version, is_deleted)} form. For those versions
+     * the connector stores a signed marker column and filters rows with
+     * {@code _sign > 0} at query time. Newer versions use the native
+     * {@code is_deleted} flag. An explicitly configured column always wins.</p>
+     *
+     * @param configuredDeleteColumn user-provided delete-marker column, may be
+     *                               null or blank
+     * @param newReplacingMergeTree true when the server supports the native
+     *                              {@code is_deleted} parameter
+     * @return the column name to use for delete markers
+     */
+    public static String resolveReplacingMergeTreeDeleteColumn(
+            String configuredDeleteColumn, boolean newReplacingMergeTree) {
+        if (configuredDeleteColumn != null
+                && !configuredDeleteColumn.trim().isEmpty()) {
+            return configuredDeleteColumn.trim();
+        }
+        return newReplacingMergeTree ? IS_DELETED_COLUMN : SIGN_COLUMN;
+    }
+
+    /**
+     * Resolves the marker and avoids collisions with source columns using the
+     * same naming rule as the DDL generators.
+     *
+     * @param configuredDeleteColumn user-provided delete-marker column, may be
+     *                               null or blank
+     * @param newReplacingMergeTree true when the server supports the native
+     *                              {@code is_deleted} parameter
+     * @param sourceColumnNames source column names, may be null
+     * @return the marker column name to use in the target table
+     */
+    public static String resolveReplacingMergeTreeDeleteColumn(
+            String configuredDeleteColumn,
+            boolean newReplacingMergeTree,
+            Collection<String> sourceColumnNames) {
+        String candidate = resolveReplacingMergeTreeDeleteColumn(
+                configuredDeleteColumn, newReplacingMergeTree);
+        if (sourceColumnNames == null || sourceColumnNames.isEmpty()) {
+            return candidate;
+        }
+
+        boolean collision;
+        do {
+            collision = false;
+            for (String sourceColumnName : sourceColumnNames) {
+                if (sourceColumnName != null
+                        && sourceColumnName.replace("`", "")
+                        .equalsIgnoreCase(candidate)) {
+                    candidate = "_" + candidate;
+                    collision = true;
+                    break;
+                }
+            }
+        } while (collision);
+        return candidate;
+    }
+
+    /**
+     * Resolves the configured ReplacingMergeTree delete-marker column for the
+     * target ClickHouse version.
+     *
+     * @param newReplacingMergeTree true when the server supports the native
+     *                              {@code is_deleted} parameter
+     * @return the column name to use for delete markers
+     */
+    public String getReplacingMergeTreeDeleteColumn(
+            boolean newReplacingMergeTree) {
+        return resolveReplacingMergeTreeDeleteColumn(
+                getString(ClickHouseSinkConnectorConfigVariables
+                        .REPLACING_MERGE_TREE_DELETE_COLUMN.toString()),
+                newReplacingMergeTree);
     }
 
     /**
@@ -410,10 +490,12 @@ public class ClickHouseSinkConnectorConfig extends AbstractConfig {
                 .define(
                     ClickHouseSinkConnectorConfigVariables.REPLACING_MERGE_TREE_DELETE_COLUMN.toString(),
                     Type.STRING,
-                    "sign",
+                    "",
                     Importance.LOW,
-                    "Column thats used to store the sign value when the engine is ReplacingMergeTree, when a " +
-                            "delete CDC record is received, this column is set to -1, 1 otherwise",
+                    "Column used to store the ReplacingMergeTree delete marker. "
+                            + "When empty, the connector uses _sign for ClickHouse "
+                            + "versions before 23.2 and is_deleted for 23.2+; "
+                            + "delete events are written as -1 or 1 in the legacy mode.",
                     CONFIG_GROUP_CONNECTOR_CONFIG,
                     1,
                     ConfigDef.Width.NONE,

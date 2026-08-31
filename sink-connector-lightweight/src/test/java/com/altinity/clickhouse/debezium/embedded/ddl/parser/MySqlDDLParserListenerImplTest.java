@@ -306,6 +306,34 @@ public class MySqlDDLParserListenerImplTest {
         String expectedQuery = "CREATE TABLE if not exists ch1.`table_7220f7bd_8c8c_11ef_94db_67ff65f7711d` ON CLUSTER `{cluster}`(id Int32 NOT NULL ,col1 Nullable(String),col2 Nullable(Int32),`_version` UInt64,`is_deleted` UInt8) Engine=ReplicatedReplacingMergeTree(_version, is_deleted) ORDER BY (id)";
         Assert.assertTrue(clickHouseQuery.toString().equalsIgnoreCase(expectedQuery));
     }
+
+    @Test
+    public void testCreateTableForLegacyReplacingMergeTreeUsesSignMarker() {
+        boolean previousEngineMode =
+                DebeziumChangeEventCapture.isNewReplacingMergeTreeEngine;
+        try {
+            DebeziumChangeEventCapture.isNewReplacingMergeTreeEngine = false;
+
+            StringBuffer clickHouseQuery = new StringBuffer();
+            String createQuery =
+                    "CREATE TABLE legacy_table (id INT NOT NULL, "
+                            + "payload VARCHAR(255), PRIMARY KEY (id)) ENGINE=InnoDB";
+            mySQLDDLParserService.parseSql(createQuery, "Persons", clickHouseQuery);
+
+            String generated = clickHouseQuery.toString();
+            Assert.assertTrue("Legacy DDL must create the _sign marker: " + generated,
+                    generated.contains("`_sign` Int8"));
+            Assert.assertTrue("Legacy DDL must use the one-argument RMT form: " + generated,
+                    generated.contains("Engine=ReplacingMergeTree(_version)"));
+            Assert.assertFalse("Legacy DDL must not use the native is_deleted argument: "
+                            + generated,
+                    generated.contains("is_deleted"));
+        } finally {
+            DebeziumChangeEventCapture.isNewReplacingMergeTreeEngine =
+                    previousEngineMode;
+        }
+    }
+
     @Test
     public void testCreateTableAutoIncrement() {
         StringBuffer clickHouseQuery = new StringBuffer();

@@ -16,11 +16,15 @@ import org.apache.logging.log4j.Logger;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
 import static io.debezium.storage.jdbc.offset.JdbcOffsetBackingStoreConfig.OFFSET_STORAGE_PREFIX;
+import static com.altinity.clickhouse.sink.connector.db.ClickHouseDbConstants.IS_DELETED_COLUMN;
+import static com.altinity.clickhouse.sink.connector.db.ClickHouseDbConstants.SIGN_COLUMN;
 
 /**
  * Class that abstracts all functionality related to interacting
@@ -68,6 +72,13 @@ public class DbWriter extends BaseDbWriter {
      * The connector configuration.
      */
     private final ClickHouseSinkConnectorConfig config;
+
+    /**
+     * The source record used to build this writer. Its schema is used to
+     * distinguish a connector-managed marker from a source column with the
+     * same name when the DDL generator had to prefix the marker.
+     */
+    private final ClickHouseStruct initialRecord;
 
     /**
      * Sign column used if the engine is CollapsingMergeTree.
@@ -149,13 +160,14 @@ public class DbWriter extends BaseDbWriter {
         super(hostName, port, database, userName, password, config, connection);
         this.tableName = tableName;
         this.config = config;
+        this.initialRecord = record;
         this.dbMetadata = new DBMetadata(config);
 
         try {
             initializeColumnMetadata();
             ensureDatabasesExist();
             initializeTableEngine(hostName, record);
-            configureEngineSpecificColumns();
+            configureEngineSpecificColumns(record);
         } catch (Exception e) {
             log.error("***** DBWriter error initializing ****", e);
         }
@@ -304,7 +316,7 @@ public class DbWriter extends BaseDbWriter {
      * Configures engine-specific columns (version, sign, delete columns)
      * based on the table engine type.
      */
-    private void configureEngineSpecificColumns() {
+    private void configureEngineSpecificColumns(ClickHouseStruct record) {
         if (this.engine == null || this.tableEngineResponse == null) {
             return;
         }
@@ -312,7 +324,7 @@ public class DbWriter extends BaseDbWriter {
         String engineName = this.engine.getEngine();
 
         if (isReplacingMergeTreeEngine(engineName)) {
-            configureReplacingMergeTreeColumns(tableEngineResponse.getRight());
+            configureReplacingMergeTreeColumns(tableEngineResponse.getRight(), record);
         } else if (isCollapsingMergeTreeEngine(engineName)) {
             this.signColumn = tableEngineResponse.getRight();
         }
@@ -341,7 +353,8 @@ public class DbWriter extends BaseDbWriter {
      *
      * @param rmtColumns The column specification from table engine response.
      */
-    private void configureReplacingMergeTreeColumns(String rmtColumns) {
+    private void configureReplacingMergeTreeColumns(String rmtColumns,
+                                                    ClickHouseStruct record) {
         if (rmtColumns != null && rmtColumns.contains(",")) {
             // The table uses the new RMT with version and deleted column
             String[] parts = rmtColumns.split(",");
@@ -349,10 +362,59 @@ public class DbWriter extends BaseDbWriter {
             this.replacingMergeTreeDeleteColumn = parts[1].trim();
             this.replacingMergeTreeWithIsDeletedColumn = true;
         } else {
+            this.replacingMergeTreeWithIsDeletedColumn = false;
             this.versionColumn = rmtColumns;
-            this.replacingMergeTreeDeleteColumn = this.config.getString(
-                    ClickHouseSinkConnectorConfigVariables.REPLACING_MERGE_TREE_DELETE_COLUMN.toString());
+            String configuredDeleteColumn = this.config.getString(
+                    ClickHouseSinkConnectorConfigVariables
+                            .REPLACING_MERGE_TREE_DELETE_COLUMN.toString());
+            String resolvedDeleteColumn =
+                    ClickHouseSinkConnectorConfig
+                            .resolveReplacingMergeTreeDeleteColumn(
+                                    configuredDeleteColumn, false,
+                                    getSourceColumnNames(record));
+            if (this.columnNameToDataTypeMap.containsKey(resolvedDeleteColumn)) {
+                this.replacingMergeTreeDeleteColumn = resolvedDeleteColumn;
+            } else if (configuredDeleteColumn == null
+                    || configuredDeleteColumn.trim().isEmpty()) {
+                // Compatibility with tables created before version-aware marker
+                // resolution was introduced.
+                if (this.columnNameToDataTypeMap.containsKey(SIGN_COLUMN)) {
+                    this.replacingMergeTreeDeleteColumn = SIGN_COLUMN;
+                } else if (this.columnNameToDataTypeMap.containsKey("sign")) {
+                    // Older connector configurations used "sign" as the
+                    // marker name, so keep existing manually-created tables
+                    // writable after the default changes to _sign.
+                    this.replacingMergeTreeDeleteColumn = "sign";
+                } else if (this.columnNameToDataTypeMap.containsKey(IS_DELETED_COLUMN)) {
+                    this.replacingMergeTreeDeleteColumn = IS_DELETED_COLUMN;
+                } else {
+                    this.replacingMergeTreeDeleteColumn = resolvedDeleteColumn;
+                }
+            } else {
+                this.replacingMergeTreeDeleteColumn = resolvedDeleteColumn;
+            }
         }
+    }
+
+    private Collection<String> getSourceColumnNames(ClickHouseStruct record) {
+        if (record == null) {
+            return Collections.emptyList();
+        }
+        org.apache.kafka.connect.data.Struct source =
+                record.getAfterStruct() != null
+                        ? record.getAfterStruct()
+                        : record.getBeforeStruct();
+        if (source == null || source.schema() == null) {
+            return Collections.emptyList();
+        }
+        List<String> columnNames = new ArrayList<>();
+        for (org.apache.kafka.connect.data.Field field
+                : source.schema().fields()) {
+            if (field != null && field.name() != null) {
+                columnNames.add(field.name());
+            }
+        }
+        return columnNames;
     }
 
     /**
@@ -403,6 +465,7 @@ public class DbWriter extends BaseDbWriter {
                 tableName, this.conn, database);
         this.tableEngineResponse = dbMetadata.getTableEngine(this.conn, database, tableName);
         this.engine = tableEngineResponse.getLeft();
+        configureEngineSpecificColumns(this.initialRecord);
         // Refresh the sorting key alongside the rest of the metadata. This is
         // the path taken when the table is created by a replicated DDL rather
         // than by auto-create, so leaving it stale here means the writer sees

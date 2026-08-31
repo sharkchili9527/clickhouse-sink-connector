@@ -387,18 +387,12 @@ public class MySqlDDLParserListenerImpl extends MySQLDDLParserBaseListener {
             log.error(KeylessTableWarning.banner(this.databaseName, this.tableName));
         }
 
-        String isDeletedColumn = IS_DELETED_COLUMN;
-
-        // Iterate through columnNames and match isDeletedColumn with elements in columnNames.
-        for (String columnName: columnNames) {
-            if (columnName.contains("`")) {
-                columnName = columnName.replace("`", "");
-            }
-            if (columnName.equalsIgnoreCase(isDeletedColumn)) {
-                isDeletedColumn = "_" + IS_DELETED_COLUMN;
-                break;
-            }
-        }
+        String isDeletedColumn =
+                ClickHouseSinkConnectorConfig.resolveReplacingMergeTreeDeleteColumn(
+                        config.getString(ClickHouseSinkConnectorConfigVariables
+                                .REPLACING_MERGE_TREE_DELETE_COLUMN.toString()),
+                        DebeziumChangeEventCapture.isNewReplacingMergeTreeEngine,
+                        columnNames);
 
         // Check if the destination is ReplicatedReplacingMergeTree.
         boolean isReplicatedReplacingMergeTree = config.getBoolean(ClickHouseSinkConnectorConfigVariables
@@ -429,7 +423,7 @@ public class MySqlDDLParserListenerImpl extends MySQLDDLParserBaseListener {
             this.query.append("`").append(VERSION_COLUMN).append("` ").append(VERSION_COLUMN_DATA_TYPE).append(",");
             this.query.append("`").append(isDeletedColumn).append("` ").append(IS_DELETED_COLUMN_DATA_TYPE);
         } else {
-            this.query.append("`").append(SIGN_COLUMN).append("` ").append(SIGN_COLUMN_DATA_TYPE).append(",");
+            this.query.append("`").append(isDeletedColumn).append("` ").append(SIGN_COLUMN_DATA_TYPE).append(",");
             this.query.append("`").append(VERSION_COLUMN).append("` ").append(VERSION_COLUMN_DATA_TYPE);
         }
 

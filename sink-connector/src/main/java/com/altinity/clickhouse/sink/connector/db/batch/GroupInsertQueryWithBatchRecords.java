@@ -62,6 +62,22 @@ public class GroupInsertQueryWithBatchRecords {
             ClickHouseSinkConnectorConfig config,
             String tableName, String databaseName, Connection connection,
             Map<String, String> columnNameToDataTypeMap) {
+        return groupQueryWithRecords(records, queryToRecordsMap,
+                partitionToOffsetMap, config, tableName, databaseName,
+                connection, columnNameToDataTypeMap,
+                config.getString(ClickHouseSinkConnectorConfigVariables
+                        .REPLACING_MERGE_TREE_DELETE_COLUMN.toString()));
+    }
+
+    public boolean groupQueryWithRecords(
+            List<ClickHouseStruct> records,
+            Map<MutablePair<String, Map<String, Integer>>,
+                    List<ClickHouseStruct>> queryToRecordsMap,
+            Map<TopicPartition, Long> partitionToOffsetMap,
+            ClickHouseSinkConnectorConfig config,
+            String tableName, String databaseName, Connection connection,
+            Map<String, String> columnNameToDataTypeMap,
+            String replacingMergeTreeDeleteColumn) {
         boolean result = false;
 
         // Co4 = {ClickHouseStruct@9220} de block to create a Map of Query ->
@@ -84,7 +100,8 @@ public class GroupInsertQueryWithBatchRecords {
                     getCdcSectionBasedOnOperation(record.getCdcOperation())) {
                 result = updateQueryToRecordsMap(record,
                         record.getBeforeModifiedFields(), queryToRecordsMap,
-                        tableName, config, columnNameToDataTypeMap);
+                        tableName, config, columnNameToDataTypeMap,
+                        replacingMergeTreeDeleteColumn);
             } else if (CdcRecordState.CDC_RECORD_STATE_AFTER ==
                     getCdcSectionBasedOnOperation(record.getCdcOperation())) {
                 if (enableSchemaEvolution) {
@@ -103,7 +120,8 @@ public class GroupInsertQueryWithBatchRecords {
                 // tableName, connection, databaseName, config );
                 result = updateQueryToRecordsMap(record,
                         record.getAfterModifiedFields(), queryToRecordsMap,
-                        tableName, config, columnNameToDataTypeMap);
+                        tableName, config, columnNameToDataTypeMap,
+                        replacingMergeTreeDeleteColumn);
             }
             // UPDATE: This creates 2 records, one with before and another one with after.
             else if (CdcRecordState.CDC_RECORD_STATE_BOTH ==
@@ -112,7 +130,8 @@ public class GroupInsertQueryWithBatchRecords {
                 if (config.getBoolean(ClickHouseSinkConnectorConfigVariables.REPLICATION_HISTORY_ENABLE.toString())) {
                         result = updateQueryToRecordsMap(record,
                                 record.getAfterModifiedFields(), queryToRecordsMap,
-                                tableName, config, columnNameToDataTypeMap);
+                                tableName, config, columnNameToDataTypeMap,
+                                replacingMergeTreeDeleteColumn);
                         // `continue`, NOT `return`: this is inside the per-record
                         // loop. Returning here abandoned every remaining record in
                         // the batch the moment the first UPDATE was seen -- silently,
@@ -127,12 +146,14 @@ public class GroupInsertQueryWithBatchRecords {
                 if (record.getBeforeModifiedFields() != null) {
                     result = updateQueryToRecordsMap(record,
                             record.getBeforeModifiedFields(), queryToRecordsMap,
-                            tableName, config, columnNameToDataTypeMap);
+                            tableName, config, columnNameToDataTypeMap,
+                            replacingMergeTreeDeleteColumn);
                 }
                 if (record.getAfterModifiedFields() != null) {
                     result = updateQueryToRecordsMap(record,
                             record.getAfterModifiedFields(), queryToRecordsMap,
-                            tableName, config, columnNameToDataTypeMap);
+                            tableName, config, columnNameToDataTypeMap,
+                            replacingMergeTreeDeleteColumn);
                 }
             } else {
                 log.error("************ RECORD DROPPED: INVALID CDC RECORD " +
@@ -165,6 +186,19 @@ public class GroupInsertQueryWithBatchRecords {
                     List<ClickHouseStruct>> queryToRecordsMap,
             String tableName, ClickHouseSinkConnectorConfig config,
             Map<String, String> columnNameToDataTypeMap) {
+        return updateQueryToRecordsMap(record, modifiedFields, queryToRecordsMap,
+                tableName, config, columnNameToDataTypeMap,
+                config.getString(ClickHouseSinkConnectorConfigVariables
+                        .REPLACING_MERGE_TREE_DELETE_COLUMN.toString()));
+    }
+
+    public boolean updateQueryToRecordsMap(
+            ClickHouseStruct record, List<Field> modifiedFields,
+            Map<MutablePair<String, Map<String, Integer>>,
+                    List<ClickHouseStruct>> queryToRecordsMap,
+            String tableName, ClickHouseSinkConnectorConfig config,
+            Map<String, String> columnNameToDataTypeMap,
+            String replacingMergeTreeDeleteColumn) {
 
         // Step 1: If its a TRUNCATE OPERATION, add a TRUNCATE TABLE command.
         if (record.getCdcOperation().getOperation()
@@ -193,9 +227,7 @@ public class GroupInsertQueryWithBatchRecords {
                                 ClickHouseSinkConnectorConfigVariables.STORE_RAW_DATA_COLUMN
                                         .toString()),
                         record.getDatabase(),
-                        config.getString(
-                                ClickHouseSinkConnectorConfigVariables
-                                        .REPLACING_MERGE_TREE_DELETE_COLUMN.toString()));
+                        replacingMergeTreeDeleteColumn);
 
         String insertQueryTemplate = response.getKey();
         if (response.getKey() == null || response.getValue() == null) {

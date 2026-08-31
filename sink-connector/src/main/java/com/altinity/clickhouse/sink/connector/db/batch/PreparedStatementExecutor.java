@@ -47,6 +47,10 @@ public class PreparedStatementExecutor {
 
     private ZoneId serverTimeZone;
 
+    private final String replacingMergeTreeDeleteColumn;
+
+    private final boolean replacingMergeTreeWithIsDeletedColumn;
+
     /**
      * Supplies the target table's sorting-key columns, in key order.
      *
@@ -101,6 +105,10 @@ public class PreparedStatementExecutor {
 
         this.databaseName = databaseName;
         this.serverTimeZone = serverTimeZone;
+        this.replacingMergeTreeDeleteColumn =
+                replacingMergeTreeDeleteColumn;
+        this.replacingMergeTreeWithIsDeletedColumn =
+                replacingMergeTreeWithIsDeletedColumn;
         this.sortingKeyColumnsSupplier =
                 sortingKeyColumnsSupplier == null ? ArrayList::new : sortingKeyColumnsSupplier;
         // Initialize the field mapper with the same configuration
@@ -198,7 +206,10 @@ public class PreparedStatementExecutor {
             DBMetadata metadata = new DBMetadata(config);
             ReplicationHistoryHandler replicationHistoryHandler = null;
             if (config.getBoolean(ClickHouseSinkConnectorConfigVariables.REPLICATION_HISTORY_ENABLE.toString())) {
-                replicationHistoryHandler = new ReplicationHistoryHandler(config, this.serverTimeZone, metadata);
+                replicationHistoryHandler = new ReplicationHistoryHandler(
+                        config, this.serverTimeZone, metadata,
+                        this.replacingMergeTreeDeleteColumn,
+                        this.replacingMergeTreeWithIsDeletedColumn);
             }
             try (PreparedStatement ps = metadata.getPreparedStatement(conn, insertQuery)) {
 

@@ -522,8 +522,8 @@ public class PreparedStatementFieldMapper {
                                       Map<String, String> columnNameToDataTypeMap,
                                       DBMetadata.TABLE_ENGINE engine) throws Exception {
         if (engine != null &&
-                (engine.getEngine() == DBMetadata.TABLE_ENGINE.REPLACING_MERGE_TREE.getEngine() ||
-                        engine.getEngine() == DBMetadata.TABLE_ENGINE.REPLICATED_REPLACING_MERGE_TREE.getEngine())
+                (engine == DBMetadata.TABLE_ENGINE.REPLACING_MERGE_TREE
+                        || engine == DBMetadata.TABLE_ENGINE.REPLICATED_REPLACING_MERGE_TREE)
                 && versionColumn != null) {
             if (columnNameToDataTypeMap.containsKey(versionColumn)) {
                 if (columnNameToIndexMap.containsKey(versionColumn)) {
@@ -653,4 +653,3 @@ public class PreparedStatementFieldMapper {
         return chDataType;
     }
 }
-

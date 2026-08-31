@@ -157,15 +157,16 @@ public class ClickHouseAutoCreateTable
             createTableSyntax.append(",");
         }
 
-        String isDeletedColumn = IS_DELETED_COLUMN;
-        if (rmtDeleteColumn != null && !rmtDeleteColumn.isEmpty()) {
-            isDeletedColumn = rmtDeleteColumn;
-        }
-        
+        String isDeletedColumn =
+                ClickHouseSinkConnectorConfig.resolveReplacingMergeTreeDeleteColumn(
+                        rmtDeleteColumn, isNewReplacingMergeTreeEngine,
+                        getFieldNames(fields));
+        boolean replicationHistoryEnabled = config.getBoolean(
+                ClickHouseSinkConnectorConfigVariables.REPLICATION_HISTORY_ENABLE.toString());
 
         // If Replication history is enabled, add the temporal columns
         // _valid_from, _valid_to, _operation, and is_deleted
-        if (config.getBoolean(ClickHouseSinkConnectorConfigVariables.REPLICATION_HISTORY_ENABLE.toString())) {
+        if (replicationHistoryEnabled) {
             // Add _valid_from column
             createTableSyntax.append("`").append(DELETED_FROM_TIME_COLUMN)
                     .append("` ").append("DateTime")
@@ -183,11 +184,11 @@ public class ClickHouseAutoCreateTable
 
             // Add is_deleted column for replication history
             createTableSyntax.append("`").append(isDeletedColumn)
-                    .append("` ").append(IS_DELETED_COLUMN_DATA_TYPE)
+                    .append("` ").append(isNewReplacingMergeTreeEngine
+                            ? IS_DELETED_COLUMN_DATA_TYPE
+                            : SIGN_COLUMN_DATA_TYPE)
                     .append(",");
         }
-
-        boolean replicationHistoryEnabled = config.getBoolean(ClickHouseSinkConnectorConfigVariables.REPLICATION_HISTORY_ENABLE.toString());
 
         if (isNewReplacingMergeTreeEngine == true) {
             createTableSyntax.append("`").append(VERSION_COLUMN)
@@ -200,9 +201,14 @@ public class ClickHouseAutoCreateTable
             }
         } else {
             // Append sign and version columns.
-            createTableSyntax.append("`").append(SIGN_COLUMN)
-                    .append("` ").append(SIGN_COLUMN_DATA_TYPE)
-                    .append(",");
+            // In legacy mode the marker is an ordinary signed column. Use the
+            // configured/resolved name instead of hardcoding "sign" or "_sign".
+            // History mode already added the marker above.
+            if (!replicationHistoryEnabled) {
+                createTableSyntax.append("`").append(isDeletedColumn)
+                        .append("` ").append(SIGN_COLUMN_DATA_TYPE)
+                        .append(",");
+            }
             createTableSyntax.append("`").append(VERSION_COLUMN)
                     .append("` ").append(VERSION_COLUMN_DATA_TYPE);
         }
@@ -215,7 +221,7 @@ public class ClickHouseAutoCreateTable
                         "Engine=ReplicatedReplacingMergeTree(%s, %s)",
                         VERSION_COLUMN, isDeletedColumn));
             } else {
-                createTableSyntax.append(" Engine=ReplacingMergeTree(")
+                createTableSyntax.append("Engine=ReplacingMergeTree(")
                         .append(VERSION_COLUMN).append(",")
                         .append(isDeletedColumn).append(")");
             }
@@ -280,6 +286,19 @@ public class ClickHouseAutoCreateTable
         return createTableSyntax.toString();
     }
 
+    private ArrayList<String> getFieldNames(Field[] fields) {
+        ArrayList<String> fieldNames = new ArrayList<>();
+        if (fields == null) {
+            return fieldNames;
+        }
+        for (Field field : fields) {
+            if (field != null && field.name() != null) {
+                fieldNames.add(field.name());
+            }
+        }
+        return fieldNames;
+    }
+
     /**
      * Creates a history table with MergeTree engine, including
      * CDC metadata columns such as database, table, raw payload,
@@ -298,16 +317,25 @@ public class ClickHouseAutoCreateTable
             throws SQLException {
         // Get server timezone
         ZoneId serverTimeZone = getServerTimeZone(config, connection);
+        DBMetadata metadata = new DBMetadata(config);
+        boolean newReplacingMergeTree = false;
+        try {
+            newReplacingMergeTree = metadata.checkIfNewReplacingMergeTree(
+                    metadata.getClickHouseVersion(connection));
+        } catch (Exception e) {
+            log.error("Error detecting ClickHouse version for history table; "
+                    + "using legacy ReplacingMergeTree syntax", e);
+        }
         
         String sql = new BinLogHistory().createHistoryTableSyntax(
-                 historyTableName,
+                historyTableName,
                 databaseName,
                 config.getInt(ClickHouseSinkConnectorConfigVariables.REPLICATION_HISTORY_TTL.toString()),
-                serverTimeZone);
+                serverTimeZone,
+                newReplacingMergeTree);
         log.info(String.format(
                 "**** AUTO CREATE HISTORY TABLE for database(%s), Query :%s)",
                 databaseName, sql));
-        DBMetadata metadata = new DBMetadata(config);
         metadata.executeSystemQuery(connection, sql);
     }
     

@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  日志配置。必须挂进容器并用 -Dlog4j2.configurationFile=/log4j2.xml 指定。
+
+  为什么需要这个文件：shaded 后的 app.jar 里有两份 log4j2.xml，
+  sink-connector 模块那份是 <Root level="debug">，它会覆盖
+  sink-connector-lightweight 模块的 info，结果 Apache HttpClient 的 wire
+  logger 把每个 INSERT 的请求体和响应体全打出来。实测 150 万行快照产出
+  503MB 日志、耗时比 INFO 级别多 18%（35分03秒 vs 28分48秒）。
+
+  注意：必须用 JAVA_TOOL_OPTIONS 传 -Dlog4j2.configurationFile，
+  JAVA_OPTS 在这个镜像里不生效（ENTRYPOINT 是 exec 形式，不展开变量）。
+
+  排查 DDL 问题时把 Root 调成 debug 即可，别忘了改回来。
+-->
+<Configuration status="WARN">
+    <Appenders>
+        <Console name="console" target="SYSTEM_OUT">
+            <PatternLayout pattern="%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level %c{1} - %msg%n"/>
+        </Console>
+    </Appenders>
+    <Loggers>
+        <!-- 官方驱动的 INFO 噪音很大，且它的错误会由连接器自己再打一遍。 -->
+        <Logger name="com.clickhouse" level="ERROR" additivity="false">
+            <AppenderRef ref="console"/>
+        </Logger>
+        <!-- 这一条是关键：wire/headers logger 属于 org.apache.http。 -->
+        <Logger name="org.apache.http" level="WARN" additivity="false">
+            <AppenderRef ref="console"/>
+        </Logger>
+        <Root level="info" additivity="false">
+            <AppenderRef ref="console"/>
+        </Root>
+    </Loggers>
+</Configuration>

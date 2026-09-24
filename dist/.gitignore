@@ -1,0 +1,12 @@
+# 二进制产出不入库，用构建脚本重新生成
+app.jar
+sink-connector-client
+*.tar.gz
+config.yml
+ddl_probe.env
+# 脱敏映射（真实主机名与库名），只留在本机
+ENV_LOCAL.md
+*.tar.gz.sha256
+.DS_Store
+# 第三方 agent jar，随交付包物理拷贝，SHA256 见 HANDOVER.md
+jmx_prometheus_javaagent-*.jar

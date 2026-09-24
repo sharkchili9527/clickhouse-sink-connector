@@ -1,0 +1,162 @@
+# MySQL -> ClickHouse 同步配置模板
+# 针对 141 万行 / 单表占绝大多数数据 的全量 + 增量场景调优。
+# 用法：复制成 config.yml，填好下面 <> 占位符，用 docker-compose.yml 挂载进容器的 /config.yml。
+#
+# 本模板对应的连接器镜像：clickhouse_debezium_embedded:ck22.8-fix-20260904-5
+# 目标 ClickHouse：22.8.x，单分片多副本，Replicated 引擎（必须配 cluster 宏）
+#
+# 下面的队列参数按【4G 容器】给值，和同目录 docker-compose.yml 的
+# -Xmx2g / mem_limit 3500m 是配套的。换内存档位要同时改四处：
+#   1) compose 的 -Xmx  2) compose 的 mem_limit
+#   3) 本文件 sink.connector.max.queue.size  4) 本文件 max.queue.size.in.bytes
+# 不要只改一边。
+#
+# 本模板的吞吐与监控取值与生产任务 ota-stat-prod 的现网配置一致，
+# 已在 4G 容器 + 150 万行场景实测；换环境时优先只改连接信息与表清单。
+#
+# 另外 docker-compose.yml 里挂载的 log4j2.xml 不要删：镜像内 shade 进去的那份是
+# DEBUG 级别，会把每条 INSERT 的 HTTP 报文都打出来，实测 150 万行快照多耗 18%、
+# 产出 503MB 日志。挂上之后同样的快照约 60 秒、日志 512KB。
+
+name: "<TASK_NAME>"
+topic.prefix: "<TASK_NAME>"
+
+# ---------- MySQL 源 ----------
+database.hostname: "<MYSQL_HOST>"
+database.port: "3306"
+database.user: "<MYSQL_USER>"
+database.password: "<MYSQL_PASSWORD>"
+# 必须全局唯一，不能和其它复制任务或真实从库冲突。
+# 同一个值禁止同时跑两个容器实例（含"新旧容器并行观察"这种操作）：
+# MySQL 会把先连上的那个客户端踢掉，现象是两边轮流断流。
+database.server.id: "<UNIQUE_SERVER_ID>"
+database.include.list: "<DB1,DB2,DB3>"
+# 逐表列出（正则形式，点号要转义）。DDL 只按 database.include.list 过滤，
+# 不按本项过滤：未列出的表在 CK 会被建出空表，属于已知行为。
+table.include.list: '<DB1\.table1,DB1\.table2>'
+
+# ---------- ClickHouse 目标 ----------
+clickhouse.server.url: "<CK_HOST>"
+clickhouse.server.port: "8123"
+clickhouse.server.user: "<CK_USER>"
+clickhouse.server.password: "<CK_PASSWORD>"
+clickhouse.database.override.map: "<DB1:TARGET_DB,DB2:TARGET_DB,DB3:TARGET_DB>"
+
+database.allowPublicKeyRetrieval: "true"
+database.connectionTimeZone: "Asia/Shanghai"
+clickhouse.datetime.timezone: "Asia/Shanghai"
+database.ssl.mode: "disabled"
+
+# ---------- 快照（全量）----------
+snapshot.mode: "initial"
+# none 表示不加全局读锁。加锁需要 RELOAD 权限；只读账号通常没有，
+# 配成 minimal/extended 会在快照开始时直接失败。
+snapshot.locking.mode: "none"
+# 一次 SELECT 拉多少行。141 万行的表靠这个减少 JDBC 往返，别低于 10000。
+snapshot.fetch.size: "10000"
+# 并行读几张表。表多时有效；单张巨表主要靠 fetch.size 和 max.batch.size。
+snapshot.max.threads: "4"
+# 必须 false。Debezium 快照阶段会发 DROP TABLE IF EXISTS，
+# 开启后任何一次重新快照都会先把 ClickHouse 目标表删掉。
+enable.snapshot.ddl: "false"
+
+# ---------- 建表 ----------
+auto.create.tables: "true"
+auto.create.tables.replicated: "true"
+# ClickHouse 22.8 用老式 _sign 删除标记（新的 is_deleted 语义要 23.2+）。
+# 留空表示由连接器按版本解析成 _sign。
+replacingmergetree.delete.column: ""
+ignore_delete: "false"
+# 保持 true。它有两个作用：MySQL 加列后写入路径能兜底补列；以及连接器借它
+# 每批重读一次 ClickHouse 列元数据，从而发现目标表被带外改过。
+# 代价只有每批 2 条 system.columns 查询（20260904-3 之前是每行 2 条，
+# 那才是 150 万行快照要跑近半小时的真正原因）。
+schema.evolution: "true"
+disable.ddl: "false"
+# 多个模式用 || 分隔，按【原始源端 DDL】做 find() 匹配。
+# 第二段挡掉在线 DDL 工具的影子表（gh-ost 的 _t_gho/_t_ghc/_t_del、
+# pt-osc 的 _t_new/_t_old）：DDL 只按 database.include.list 过滤，
+# 不加这条的话 gh-ost / pt-osc 每次改表都会在 ClickHouse 多出一堆空表。
+# 源库不用在线 DDL 工具的话可以只留第一段。
+ignore.ddl.regex: '(?i)(ANALYZE PARTITION).*||(?i)TABLE\s+(IF\s+(NOT\s+)?EXISTS\s+)?`?[A-Za-z0-9_]*`?\.?`?_[A-Za-z0-9_]+_(gho|ghc|del|new|old)`?'
+
+# ---------- offset 与 schema history（存在 ClickHouse 里）----------
+# 注意：连接器的全部续跑状态都在 <META_DB> 的 cdc_offsets / cdc_schema_history
+# 两张表里，不在容器本地。所以"删容器重建"不等于重新全量——
+# 重灌必须显式清这两张表，否则只会从旧位点续跑。步骤见 README.md「重灌恢复」。
+offset.flush.interval.ms: "5000"
+offset.storage: "io.debezium.storage.jdbc.offset.JdbcOffsetBackingStore"
+offset.storage.jdbc.url: "jdbc:clickhouse://<CK_HOST>:8123/<META_DB>"
+offset.storage.jdbc.user: "<CK_USER>"
+offset.storage.jdbc.password: "<CK_PASSWORD>"
+offset.storage.jdbc.table.name: "<META_DB>.cdc_offsets"
+# ORDER BY 必须是 offset_key，不能是 id。id 每次 flush 都是新 UUID，
+# 用它做排序键会让 ReplacingMergeTree 永远不折叠，表无限膨胀，
+# 且 /status 与 show_replica_status 永远显示第一次写入的 offset。
+offset.storage.jdbc.table.ddl: "CREATE TABLE IF NOT EXISTS %s (`id` String, `offset_key` String, `offset_val` String, `record_insert_ts` DateTime, `record_insert_seq` UInt64, `_version` UInt64 MATERIALIZED toUnixTimestamp64Nano(now64(9))) ENGINE = ReplacingMergeTree(_version) ORDER BY offset_key SETTINGS index_granularity = 8192"
+offset.storage.jdbc.table.delete: "select * from %s"
+offset.storage.jdbc.table.select: "SELECT id, offset_key, offset_val FROM %s FINAL ORDER BY record_insert_ts, record_insert_seq"
+
+schema.history.internal: "io.debezium.storage.jdbc.history.JdbcSchemaHistory"
+schema.history.internal.jdbc.url: "jdbc:clickhouse://<CK_HOST>:8123/<META_DB>"
+schema.history.internal.jdbc.user: "<CK_USER>"
+schema.history.internal.jdbc.password: "<CK_PASSWORD>"
+schema.history.internal.jdbc.table.name: "<META_DB>.cdc_schema_history"
+schema.history.internal.jdbc.table.ddl: "CREATE TABLE IF NOT EXISTS %s (`id` VARCHAR(36) NOT NULL, `history_data` VARCHAR(65000), `history_data_seq` INTEGER, `record_insert_ts` TIMESTAMP NOT NULL, `record_insert_seq` INTEGER NOT NULL) ENGINE = ReplacingMergeTree(record_insert_seq) ORDER BY id"
+
+# ---------- 吞吐（按 4G 容器给值）----------
+# 批越大，Replicated 表上生成的 part 和 ZooKeeper 事务越少。别用默认的 1000。
+# 但要说清楚：快照慢的主因不是这一项。20260904-3 之前连接器每写一行都要查两次
+# system.columns，150 万行打出 66 万条元数据 SELECT、吃掉 2.6 个核，真正的 INSERT
+# 只有 33 条、平均 19ms。那个缺陷修掉之后，同样的 150 万行从 28 分 48 秒降到约 60 秒，
+# 而这些队列参数一个都没动。所以遇到快照慢，先确认镜像版本，再谈调参。
+max.batch.size: "10000"
+max.queue.size: "40000"
+# Debezium 变更事件队列的字节上限，是上限不是预分配。2G 堆下给 128MB；
+# 8G 容器（-Xmx5g）可回到 256MB。
+max.queue.size.in.bytes: "134217728"
+# 注意：这个数是【批次数】不是行数，队列元素是整个 List。
+# 4G 容器 / 2G 堆定为 8：10000 x 8 = 8 万个对象，约 75MB。
+# 8G 容器可以放到 32（约 300MB）。绝对不要往几百上调。
+sink.connector.max.queue.size: "8"
+buffer.flush.time.ms: "1000"
+# 单条 INSERT 的行数上限，必须 >= max.batch.size，否则会静默把批次切小。
+buffer.max.records: "20000"
+# N 个 worker 线程共享一个队列（表级 hash 路由那段代码是死的，
+# routedRecords 声明了从未赋值）。所以 N>1 时同表批次可能并发写入，
+# 不保证顺序；但 ReplacingMergeTree 用源端 _version 决胜，实测结果仍然正确。
+# 4 是实测用的值（150 万行约 60 秒，数据与 MySQL 逐项一致）；
+# DDL 极频繁或有"删掉立刻用同一主键重插"的写法时可降到 1 换取严格保序。
+thread.pool.size: "4"
+# 绝对不能为 true。单线程模式下 this.executor 永不赋值，而 drainBeforeDDL()
+# 无条件调用 executor.pause()，于是每个 DDL 事件都死于 NullPointerException，
+# 现象是「DDL received 有、ClickHouse DDL 没有、且完全不报错」。
+single.threaded: "false"
+connector.class: "io.debezium.connector.mysql.MySqlConnector"
+errors.max.retries: "20"
+
+clickhouse.jdbc.params: "keepalive.timeout=3,max_buffer_size=1000000,socket_timeout=30000,connection_timeout=30000"
+# input_format_null_as_default=0 让 NULL 写入非 Nullable 列时直接报错，
+# 而不是被静默改写成列默认值。
+clickhouse.jdbc.settings: "input_format_null_as_default=0,allow_experimental_object_type=1,insert_allow_materialized_columns=1"
+# 保留源端 NULL。false 时 Kafka Connect 对空字段返回 schema 默认值，
+# MySQL 里 NULL 而声明了 DEFAULT 0 的列会在 ClickHouse 变成 0。
+non.default.value: "true"
+# 保持 true。仓库里所有部署模板都是 true，代码也是按这个前提加固的；
+# 开启 Hikari 反而会把驱动切到非池化的 HTTP_URL_CONNECTION。
+connection.pool.disable: "true"
+
+# ---------- 监控与保护 ----------
+metrics.enable: "true"
+metrics.port: "8083"
+use.nongraceful.disconnect: "true"
+connect.keep.alive: "true"
+connect.keep.alive.interval.ms: "30000"
+restart.event.loop: "true"
+# 不要调小。这个监控比较的是【源端事件时间】而非"连接器上次干活的时间"，
+# 快照期间它可能长时间不动。实测 600 秒会导致 2.5 小时内 3 次误重启，
+# 而非增量快照无法续跑，每次误重启都从第一张表重新开始。
+restart.event.loop.timeout.period.secs: "3000"
+
+persist.raw.bytes: "false"
+replication.history.enable: "false"

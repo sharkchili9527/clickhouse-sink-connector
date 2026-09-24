@@ -1,0 +1,24 @@
+# jmx_prometheus_javaagent 规则：把 Debezium 的 JMX MBean 转成 debezium_metrics_* 指标。
+# 与 sink-connector/docker/debezium_jmx/config.yml 同源，仅保留 embedded 用得到的 Debezium 规则。
+# 挂进容器后由 -javaagent 在 :9072 暴露。0.x agent 使用此格式。
+startDelaySeconds: 0
+ssl: false
+lowercaseOutputName: false
+lowercaseOutputLabelNames: false
+rules:
+  # RowsScanned 带 table 维度，单独成规则（否则 key 会被并进指标名）。
+  - pattern: "debezium.([^:]+)<type=connector-metrics, context=([^,]+), server=([^,]+), key=([^>]+)><>RowsScanned"
+    name: "debezium_metrics_RowsScanned"
+    labels:
+      plugin: "$1"
+      name: "$3"
+      context: "$2"
+      table: "$4"
+  # 其余全部 connector-metrics：Connected / SecondsSinceLastEvent /
+  # MilliSecondsBehindSource / NumberOfDisconnects / SnapshotRunning 等。
+  - pattern: "debezium.([^:]+)<type=connector-metrics, context=([^,]+), server=([^>]+)>([^:]+)"
+    name: "debezium_metrics_$4"
+    labels:
+      plugin: "$1"
+      name: "$3"
+      context: "$2"

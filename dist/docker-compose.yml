@@ -1,0 +1,52 @@
+# MySQL -> ClickHouse 同步任务（docker 部署）
+#
+# 前置：
+#   1) 把镜像 tar 导入：gunzip -c clickhouse_debezium_embedded-ck22.8-fix-20260904-5-amd64.tar.gz | docker load
+#   2) cp config.yml.template config.yml，填好所有 <> 占位符
+#   3) docker compose up -d
+#
+# 目标机必须是 linux/amd64。
+services:
+  connector:
+    image: clickhouse_debezium_embedded:ck22.8-fix-20260904-5
+    container_name: connector
+    restart: unless-stopped
+    # 与 MySQL / ClickHouse 同网段直连；换成端口映射也可以，
+    # 但 REST 的 /status(7000) 和 metrics(8083) 需要自行暴露。
+    network_mode: host
+    environment:
+      # 镜像的 ENTRYPOINT 是 exec 形式，不会展开 $JAVA_OPTS；
+      # JAVA_TOOL_OPTIONS 是 JVM 自己读的，所以用这个才生效。
+      # 按容器 4G 可用内存配置：堆 2G，其余留给 metaspace、直接内存、
+      # 线程栈和 ClickHouse JDBC 驱动的缓冲。
+      # 配套 config.yml 里 sink.connector.max.queue.size=8、
+      # max.queue.size.in.bytes=128MB（config.yml.template 已按这一档给值）。
+      # 若换成 8G 容器：-Xmx5g + mem_limit 7g + 深度 32 + 256MB，四处一起改。
+      # -Dlog4j2.configurationFile 必须走 JAVA_TOOL_OPTIONS。镜像里 shade 进去的
+      # log4j2.xml 是 DEBUG 级别，会把每条 INSERT 的 HTTP 请求体和响应体都打出来：
+      # 实测 150 万行快照产出 503MB 日志，比 INFO 级别慢 18%。
+      # -javaagent 在同一 JVM 内读本地 MBean，把 Debezium JMX 指标暴露到 :9072，
+      # 不需要开 -Dcom.sun.management.jmxremote 远程端口。agent 常驻内存很小，
+      # 但仍别上调 -Xmx（快照峰值已 2.0~2.3GiB，容器 3500m）。
+      # 指标名、可用判据与三个陷阱见 README.md「监控接入」。
+      # 若暂不接监控：必须同时删掉下面这行的 -javaagent 片段 和 volumes 里
+      # jmx-exporter 的两行挂载。只删其中一处容器起不来。
+      JAVA_TOOL_OPTIONS: "-Xmx2g -Dlog4j2.configurationFile=/log4j2.xml -javaagent:/jmx-exporter.jar=9072:/jmx-exporter.yml"
+    volumes:
+      - ./config.yml:/config.yml:ro
+      - ./log4j2.xml:/log4j2.xml:ro
+      # JMX exporter：agent jar 与规则文件。jar 不入库，随交付包物理拷贝，
+      # SHA256 见 HANDOVER.md；接入方式见 README.md「监控接入」。
+      - ./jmx_prometheus_javaagent-0.20.0.jar:/jmx-exporter.jar:ro
+      - ./jmx-exporter.yml:/jmx-exporter.yml:ro
+    # 默认的 journald 驱动会限流丢日志（实测 10 分钟丢 18 条），
+    # 排查 DDL 问题时会误导，务必用 json-file。
+    logging:
+      driver: json-file
+      options:
+        max-size: "200m"
+        max-file: "2"
+    # 堆 2G 之外还要算 metaspace / 直接内存 / 线程栈。
+    # 20260904-3 之后快照吞吐上去了，堆压力也跟着上来：150 万行快照实测峰值
+    # 2.0~2.3GiB（此前只有 1.5GiB）。3500m 仍有余量，但别再往上顶 -Xmx。
+    mem_limit: 3500m

@@ -1,0 +1,91 @@
+# Prometheus 告警规则 —— ClickHouse Sink Connector (MySQL -> ClickHouse)
+#
+# 用法：把本文件路径加进 prometheus.yml 的 rule_files，reload 即可。
+#   rule_files:
+#     - /etc/prometheus/rules/sink-connector-alerts.yml
+# 阈值是起点值，按业务实际流量调整。告警去向(邮件/钉钉/飞书等)在 Alertmanager 侧配。
+#
+# 指标来源：8083 应用指标(clickhouse_sink_*) + 9072 Debezium JMX(debezium_metrics_*, context="streaming")。
+# 说明：clickhouse_sink_* 是写入路径触发型，停滞会冻结；源端健康以 9072 的 streaming 指标为准。
+
+groups:
+  - name: sink-connector
+    rules:
+      # ---------- 存活 / 抓取 ----------
+      - alert: SinkAppMetricsMissing
+        expr: absent(clickhouse_sink_connector_uptime)
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: "Sink 连接器 8083 应用指标消失"
+          description: "抓不到 clickhouse_sink_connector_uptime 已 2 分钟，连接器进程可能已挂或 8083 不可达。"
+
+      - alert: SinkConnectorCrashLoop
+        expr: max(resets(clickhouse_sink_connector_uptime[15m])) >= 3
+        for: 0m
+        labels: { severity: critical }
+        annotations:
+          summary: "Sink 连接器崩溃重启循环"
+          description: "15 分钟内 uptime 回退 >=3 次，疑似 binlog 位点丢失/purged 导致反复重启。"
+
+      # ---------- 源端 binlog 健康 (9072 JMX, context=streaming) ----------
+      - alert: BinlogDisconnected
+        expr: min(debezium_metrics_Connected{context="streaming"}) == 0
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: "已从 MySQL binlog 断开 ({{ $labels.name }})"
+          description: "debezium_metrics_Connected=0 持续 2 分钟。检查网络/权限/源库 binlog 是否可用。"
+
+      - alert: ReplicationLagWarning
+        expr: max(debezium_metrics_MilliSecondsBehindSource{context="streaming"}) > 30000
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "复制延迟偏高 ({{ $labels.name }})"
+          description: "MilliSecondsBehindSource > 30s 持续 5 分钟。当前 {{ $value }} ms。"
+
+      - alert: ReplicationLagCritical
+        expr: max(debezium_metrics_MilliSecondsBehindSource{context="streaming"}) > 300000
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: "复制延迟严重 ({{ $labels.name }})"
+          description: "MilliSecondsBehindSource > 5min 持续 5 分钟。当前 {{ $value }} ms。"
+
+      # 连着但没事件：区分「源库空闲」与「上游 binlog 异常」的靠谱信号。
+      # OTA 生产库长时间零事件不正常；空闲期多的库可调大 for 或提高窗口。
+      - alert: ConnectedButNoEvents
+        expr: |
+          (max(debezium_metrics_Connected{context="streaming"}) == 1)
+          and (sum(rate(debezium_metrics_TotalNumberOfEventsSeen{context="streaming"}[10m])) == 0)
+        for: 30m
+        labels: { severity: warning }
+        annotations:
+          summary: "binlog 连着却 30 分钟无事件"
+          description: "Connected=1 但 TotalNumberOfEventsSeen 速率为 0 已 30 分钟，疑似上游 binlog 停滞或源库异常静默。"
+
+      - alert: SourceErroneousEvents
+        expr: sum(increase(debezium_metrics_NumberOfErroneousEvents{context="streaming"}[10m])) > 0
+        for: 0m
+        labels: { severity: warning }
+        annotations:
+          summary: "源端出现解析/处理错误事件"
+          description: "10 分钟内 NumberOfErroneousEvents 增长 {{ $value }}。"
+
+      # ---------- 写入 / DDL (8083 应用指标) ----------
+      - alert: SinkWriteErrors
+        expr: sum(rate(clickhouse_sink_topics_error_records_total[5m])) > 0
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "写入 ClickHouse 出现错误记录"
+          description: "clickhouse_sink_topics_error_records_total 持续增长 5 分钟。"
+
+      - alert: SinkDDLFailure
+        expr: sum(increase(clickhouse_sink_ddl_total{fail="true"}[10m])) > 0
+        for: 0m
+        labels: { severity: critical }
+        annotations:
+          summary: "DDL 同步失败"
+          description: "10 分钟内出现 fail=true 的 DDL。注意：MySQL 侧把可空列改 NOT NULL 会卡死整表，须走加列->回填->删列。"

@@ -1,0 +1,450 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": { "type": "grafana", "uid": "-- Grafana --" },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "description": "ClickHouse Sink Connector (MySQL -> ClickHouse) 监控：复制延迟与任务健康。指标来自连接器 /metrics 端点 (metrics.enable=true)。",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "liveNow": false,
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "tags": ["clickhouse", "sink-connector", "cdc", "mysql"],
+  "time": { "from": "now-30m", "to": "now" },
+  "timezone": "browser",
+  "title": "ClickHouse Sink Connector - 延迟与任务健康",
+  "uid": "ch-sink-connector",
+  "version": 1,
+  "templating": {
+    "list": [
+      {
+        "name": "DS_PROM",
+        "label": "Prometheus 数据源",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": {},
+        "hide": 0,
+        "refresh": 1,
+        "regex": ""
+      },
+      {
+        "name": "job",
+        "label": "Job",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "${DS_PROM}" },
+        "definition": "label_values(clickhouse_sink_connector_uptime, job)",
+        "query": { "query": "label_values(clickhouse_sink_connector_uptime, job)", "refId": "job" },
+        "includeAll": true,
+        "multi": true,
+        "allValue": ".*",
+        "current": { "text": "All", "value": "$__all" },
+        "refresh": 2,
+        "sort": 1
+      },
+      {
+        "name": "instance",
+        "label": "Instance",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "${DS_PROM}" },
+        "definition": "label_values(clickhouse_sink_connector_uptime{job=~\"$job\"}, instance)",
+        "query": { "query": "label_values(clickhouse_sink_connector_uptime{job=~\"$job\"}, instance)", "refId": "instance" },
+        "includeAll": true,
+        "multi": true,
+        "allValue": ".*",
+        "current": { "text": "All", "value": "$__all" },
+        "refresh": 2,
+        "sort": 1
+      },
+      {
+        "name": "topic",
+        "label": "Topic / 表",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "${DS_PROM}" },
+        "definition": "label_values(clickhouse_sink_topics_num_records_total{job=~\"$job\"}, topic)",
+        "query": { "query": "label_values(clickhouse_sink_topics_num_records_total{job=~\"$job\"}, topic)", "refId": "topic" },
+        "includeAll": true,
+        "multi": true,
+        "allValue": ".*",
+        "current": { "text": "All", "value": "$__all" },
+        "refresh": 2,
+        "sort": 1
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "row",
+      "title": "任务健康 (Task Health)",
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "id": 1,
+      "panels": []
+    },
+    {
+      "type": "stat",
+      "title": "连接器在线",
+      "description": "up=1 表示 Prometheus 能抓到该连接器的 /metrics 端点。0 或无数据 = 任务疑似挂掉。",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROM}" },
+      "gridPos": { "h": 6, "w": 4, "x": 0, "y": 1 },
+      "id": 2,
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "${DS_PROM}" }, "expr": "max(up{job=~\"$job\", instance=~\"$instance\"})", "instant": true }
+      ],
+      "options": { "colorMode": "background", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"] }, "textMode": "auto" },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "DOWN", "color": "red" }, "1": { "text": "UP", "color": "green" } } }
+          ],
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "green", "value": 1 } ] },
+          "noValue": "无数据"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "stat",
+      "title": "运行时长 (Uptime)",
+      "description": "clickhouse_sink_connector_uptime，单位毫秒。数值突然归零/回退 = 连接器重启。",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROM}" },
+      "gridPos": { "h": 6, "w": 4, "x": 4, "y": 1 },
+      "id": 3,
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "${DS_PROM}" }, "expr": "max(clickhouse_sink_connector_uptime{job=~\"$job\", instance=~\"$instance\"})", "instant": true }
+      ],
+      "options": { "colorMode": "value", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "fieldConfig": { "defaults": { "unit": "ms", "noValue": "无数据", "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null } ] } }, "overrides": [] }
+    },
+    {
+      "type": "stat",
+      "title": "当前最大延迟",
+      "description": "所有 topic 中源库→CH 的最大延迟（clickhouse_sink_db_lag，毫秒）。",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROM}" },
+      "gridPos": { "h": 6, "w": 4, "x": 8, "y": 1 },
+      "id": 4,
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "${DS_PROM}" }, "expr": "max(clickhouse_sink_db_lag{job=~\"$job\", instance=~\"$instance\"})", "instant": true }
+      ],
+      "options": { "colorMode": "background", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "fieldConfig": { "defaults": { "unit": "ms", "noValue": "无数据", "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 5000 }, { "color": "red", "value": 30000 } ] } }, "overrides": [] }
+    },
+    {
+      "type": "stat",
+      "title": "错误速率",
+      "description": "sink 错误记录增长速率（rows/s）。持续 >0 说明写入 ClickHouse 出错。",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROM}" },
+      "gridPos": { "h": 6, "w": 4, "x": 12, "y": 1 },
+      "id": 5,
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "${DS_PROM}" }, "expr": "sum(rate(clickhouse_sink_topics_error_records_total{job=~\"$job\", instance=~\"$instance\"}[5m]))", "instant": true }
+      ],
+      "options": { "colorMode": "background", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "fieldConfig": { "defaults": { "unit": "rps", "decimals": 3, "noValue": "0", "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "red", "value": 0.001 } ] } }, "overrides": [] }
+    },
+    {
+      "type": "timeseries",
+      "title": "写入速率 rows/s (by topic)",
+      "description": "每个 topic 每秒写入 ClickHouse 的行数。长时间为 0（但源库有变更）= 任务停滞。",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROM}" },
+      "gridPos": { "h": 6, "w": 8, "x": 16, "y": 1 },
+      "id": 6,
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "${DS_PROM}" }, "expr": "sum by (topic) (rate(clickhouse_sink_topics_num_records_total{job=~\"$job\", instance=~\"$instance\", topic=~\"$topic\"}[5m]))", "legendFormat": "{{topic}}" }
+      ],
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["last", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "fieldConfig": { "defaults": { "unit": "rps", "custom": { "drawStyle": "line", "fillOpacity": 10, "showPoints": "never" } }, "overrides": [] }
+    },
+    {
+      "type": "row",
+      "title": "复制延迟 (Replication Lag)",
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 7 },
+      "id": 7,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "源库 → ClickHouse 延迟 (ms, by Topic)",
+      "description": "clickhouse_sink_db_lag = 批次写入时刻 - 源库事件时间(ts_ms)。反映端到端复制延迟。",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROM}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "id": 8,
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "${DS_PROM}" }, "expr": "max by (Topic) (clickhouse_sink_db_lag{job=~\"$job\", instance=~\"$instance\", Topic=~\"$topic\"})", "legendFormat": "{{Topic}}" }
+      ],
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["last", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "fieldConfig": { "defaults": { "unit": "ms", "custom": { "drawStyle": "line", "fillOpacity": 10, "showPoints": "never", "thresholdsStyle": { "mode": "line" } }, "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 5000 }, { "color": "red", "value": 30000 } ] } }, "overrides": [] }
+    },
+    {
+      "type": "timeseries",
+      "title": "Debezium → ClickHouse 延迟 (ms, by Topic)",
+      "description": "clickhouse_sink_debezium_lag = 批次写入时刻 - Debezium 处理时间。反映连接器内部消费/写入延迟。",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROM}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "id": 9,
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "${DS_PROM}" }, "expr": "max by (Topic) (clickhouse_sink_debezium_lag{job=~\"$job\", instance=~\"$instance\", Topic=~\"$topic\"})", "legendFormat": "{{Topic}}" }
+      ],
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["last", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "fieldConfig": { "defaults": { "unit": "ms", "custom": { "drawStyle": "line", "fillOpacity": 10, "showPoints": "never" } }, "overrides": [] }
+    },
+    {
+      "type": "row",
+      "title": "吞吐与错误 (Throughput & Errors)",
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 16 },
+      "id": 10,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "累计写入行数 (by topic)",
+      "description": "clickhouse_sink_topics_num_records_total 累计计数器。曲线持续上升 = 任务正常消费。",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROM}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 17 },
+      "id": 11,
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "${DS_PROM}" }, "expr": "sum by (topic) (clickhouse_sink_topics_num_records_total{job=~\"$job\", instance=~\"$instance\", topic=~\"$topic\"})", "legendFormat": "{{topic}}" }
+      ],
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["last"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "drawStyle": "line", "fillOpacity": 10, "showPoints": "never" } }, "overrides": [] }
+    },
+    {
+      "type": "timeseries",
+      "title": "错误记录速率 (rows/s, by topic)",
+      "description": "clickhouse_sink_topics_error_records_total 的增长速率。任何非零都值得关注。",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROM}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 17 },
+      "id": 12,
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "${DS_PROM}" }, "expr": "sum by (topic) (rate(clickhouse_sink_topics_error_records_total{job=~\"$job\", instance=~\"$instance\", topic=~\"$topic\"}[5m]))", "legendFormat": "{{topic}}" }
+      ],
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["last", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "fieldConfig": { "defaults": { "unit": "rps", "decimals": 3, "custom": { "drawStyle": "bars", "fillOpacity": 60, "showPoints": "never" }, "color": { "mode": "fixed", "fixedColor": "red" } }, "overrides": [] }
+    },
+    {
+      "type": "row",
+      "title": "位点与 DDL (Position & DDL)",
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 25 },
+      "id": 13,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "MySQL binlog 位点 (by file)",
+      "description": "clickhouse_sink_binlog_pos。持续增长说明连接器在跟进 binlog；长时间不动 = 停滞。",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROM}" },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 26 },
+      "id": 14,
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "${DS_PROM}" }, "expr": "max by (file) (clickhouse_sink_binlog_pos{job=~\"$job\", instance=~\"$instance\"})", "legendFormat": "{{file}}" }
+      ],
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "drawStyle": "line", "showPoints": "never" } }, "overrides": [] }
+    },
+    {
+      "type": "timeseries",
+      "title": "Kafka 分区 offset",
+      "description": "clickhouse_sink_partition_offset，按 Topic/Partition。适用于 Kafka Connect 部署形态。",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROM}" },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 26 },
+      "id": 15,
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "${DS_PROM}" }, "expr": "max by (Topic, Partition) (clickhouse_sink_partition_offset{job=~\"$job\", instance=~\"$instance\", Topic=~\"$topic\"})", "legendFormat": "{{Topic}}/{{Partition}}" }
+      ],
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "drawStyle": "line", "showPoints": "never" }, "noValue": "无数据 (非 Kafka 部署)" }, "overrides": [] }
+    },
+    {
+      "type": "timeseries",
+      "title": "DDL 处理 (累积耗时/次)",
+      "description": "clickhouse_sink_ddl_total（按 ddl/fail 标签）。注意源码里该计数器 increment 的是耗时(ms)累积值，fail=true 表示 DDL 同步失败，需要重点关注。",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROM}" },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 26 },
+      "id": 16,
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "${DS_PROM}" }, "expr": "sum by (fail) (increase(clickhouse_sink_ddl_total{job=~\"$job\", instance=~\"$instance\"}[5m]))", "legendFormat": "fail={{fail}}" }
+      ],
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "drawStyle": "bars", "fillOpacity": 50, "showPoints": "never" } }, "overrides": [ { "matcher": { "id": "byRegexp", "options": ".*fail=true.*" }, "properties": [ { "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } } ] } ] }
+    },
+    {
+      "type": "row",
+      "title": "任务停滞检测 (仅连接器指标)",
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 34 },
+      "id": 17,
+      "panels": []
+    },
+    {
+      "type": "stat",
+      "title": "近 5 分钟写入行数",
+      "description": "sum(increase(clickhouse_sink_topics_num_records_total[5m]))。=0 且源库有变更 = 写入静默/停滞。注意计数器仅写入成功才增长，停滞时会冻结。",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROM}" },
+      "gridPos": { "h": 6, "w": 6, "x": 12, "y": 35 },
+      "id": 18,
+      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "${DS_PROM}" }, "expr": "sum(increase(clickhouse_sink_topics_num_records_total{job=~\"$job\", instance=~\"$instance\"}[5m]))", "instant": true } ],
+      "options": { "colorMode": "background", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "fieldConfig": { "defaults": { "unit": "short", "noValue": "0", "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "green", "value": 1 } ] } }, "overrides": [] }
+    },
+    {
+      "type": "stat",
+      "title": "当前 binlog 位点",
+      "description": "max(clickhouse_sink_binlog_pos)。配合下方推进速率看：数值长时间不变 = 位点停滞。",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROM}" },
+      "gridPos": { "h": 6, "w": 6, "x": 18, "y": 35 },
+      "id": 19,
+      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "${DS_PROM}" }, "expr": "max(clickhouse_sink_binlog_pos{job=~\"$job\", instance=~\"$instance\"})", "instant": true } ],
+      "options": { "colorMode": "value", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "fieldConfig": { "defaults": { "unit": "short", "noValue": "无数据", "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null } ] } }, "overrides": [] }
+    },
+    {
+      "type": "stat",
+      "title": "崩溃/重启 (15m)",
+      "description": "resets(clickhouse_sink_connector_uptime[15m])：uptime 回退次数。binlog 位点丢失/purged 常导致连接器崩溃重启循环。>0 需关注。",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROM}" },
+      "gridPos": { "h": 6, "w": 6, "x": 6, "y": 35 },
+      "id": 20,
+      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "${DS_PROM}" }, "expr": "max(resets(clickhouse_sink_connector_uptime{job=~\"$job\", instance=~\"$instance\"}[15m]))", "instant": true } ],
+      "options": { "colorMode": "background", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "fieldConfig": { "defaults": { "unit": "short", "noValue": "0", "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "red", "value": 1 } ] } }, "overrides": [] }
+    },
+    {
+      "type": "stat",
+      "title": "位点是否停滞 (10m)",
+      "description": "changes(clickhouse_sink_binlog_pos[10m])：10 分钟内位点变化次数。=0 表示位点没推进——若同时 uptime 在涨、源库有写入，就是典型的『进程活着但 binlog 不动』(9/11 那种静默故障)。注意此指标仅在成功写入 CH 时才更新。",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROM}" },
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 35 },
+      "id": 21,
+      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "${DS_PROM}" }, "expr": "max(changes(clickhouse_sink_binlog_pos{job=~\"$job\", instance=~\"$instance\"}[10m]))", "instant": true } ],
+      "options": { "colorMode": "background", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "fieldConfig": { "defaults": { "unit": "short", "mappings": [ { "type": "value", "options": { "0": { "text": "停滞", "color": "red" } } } ], "noValue": "无数据", "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "green", "value": 1 } ] } }, "overrides": [] }
+    },
+    {
+      "type": "timeseries",
+      "title": "binlog 位点推进速率 (deriv, 应 > 0)",
+      "description": "deriv(clickhouse_sink_binlog_pos[5m])：位点推进斜率。长时间贴着 0 = 停滞。注意仅写入 CH 成功才更新，与源端指标交叉验证更准。",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROM}" },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 41 },
+      "id": 24,
+      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "${DS_PROM}" }, "expr": "max by (file) (deriv(clickhouse_sink_binlog_pos{job=~\"$job\", instance=~\"$instance\"}[5m]))", "legendFormat": "{{file}}" } ],
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "drawStyle": "line", "fillOpacity": 10, "showPoints": "never" }, "noValue": "无数据" }, "overrides": [] }
+    },
+    {
+      "type": "row",
+      "title": "源端 binlog 健康 (源端指标, context=streaming)",
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 49 },
+      "id": 25,
+      "panels": []
+    },
+    {
+      "type": "stat",
+      "title": "binlog 已连接",
+      "description": "debezium_metrics_Connected (context=streaming)。0=已从 MySQL binlog 断开。属源端指标，需 jmx_exporter(:9072) 已被抓取。",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROM}" },
+      "gridPos": { "h": 6, "w": 4, "x": 0, "y": 50 },
+      "id": 26,
+      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "${DS_PROM}" }, "expr": "min(debezium_metrics_Connected{context=\"streaming\"})", "instant": true } ],
+      "options": { "colorMode": "background", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "fieldConfig": { "defaults": { "mappings": [ { "type": "value", "options": { "0": { "text": "断开", "color": "red" }, "1": { "text": "已连接", "color": "green" } } } ], "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "green", "value": 1 } ] }, "noValue": "无源端指标数据" }, "overrides": [] }
+    },
+    {
+      "type": "stat",
+      "title": "距上次事件 (ms)",
+      "description": "debezium_metrics_MilliSecondsSinceLastEvent (context=streaming)。即使无写入也会增长——防陈旧信号。持续增长且源库有变更 = binlog 拉取停滞。夜间空闲期也会升高，结合断连次数判断。",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROM}" },
+      "gridPos": { "h": 6, "w": 4, "x": 4, "y": 50 },
+      "id": 27,
+      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "${DS_PROM}" }, "expr": "max(debezium_metrics_MilliSecondsSinceLastEvent{context=\"streaming\"})", "instant": true } ],
+      "options": { "colorMode": "background", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "fieldConfig": { "defaults": { "unit": "ms", "noValue": "无源端指标数据", "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 300000 }, { "color": "red", "value": 900000 } ] } }, "overrides": [] }
+    },
+    {
+      "type": "stat",
+      "title": "断连次数 (累计)",
+      "description": "debezium_metrics_NumberOfDisconnects (context=streaming)。累计值抬升 = 与 MySQL binlog 反复断开(网络/权限/源库重启/binlog 被清)。",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROM}" },
+      "gridPos": { "h": 6, "w": 4, "x": 8, "y": 50 },
+      "id": 28,
+      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "${DS_PROM}" }, "expr": "max(debezium_metrics_NumberOfDisconnects{context=\"streaming\"})", "instant": true } ],
+      "options": { "colorMode": "background", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "fieldConfig": { "defaults": { "unit": "short", "noValue": "无源端指标数据", "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 1 } ] } }, "overrides": [] }
+    },
+    {
+      "type": "timeseries",
+      "title": "源端延迟 MilliSecondsBehindSource (防陈旧)",
+      "description": "debezium_metrics_MilliSecondsBehindSource (context=streaming)。源端视角的延迟，binlog 拉取停滞时持续攀升——比写入路径的 clickhouse_sink_db_lag(停滞会冻结)更可靠。",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROM}" },
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 50 },
+      "id": 29,
+      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "${DS_PROM}" }, "expr": "max by (name) (debezium_metrics_MilliSecondsBehindSource{context=\"streaming\"})", "legendFormat": "{{name}}" } ],
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["last", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "fieldConfig": { "defaults": { "unit": "ms", "custom": { "drawStyle": "line", "fillOpacity": 10, "showPoints": "never", "thresholdsStyle": { "mode": "line" } }, "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 5000 }, { "color": "red", "value": 30000 } ] }, "noValue": "无源端指标数据" }, "overrides": [] }
+    },
+    {
+      "type": "timeseries",
+      "title": "距上次事件 (ms) 趋势",
+      "description": "debezium_metrics_MilliSecondsSinceLastEvent 时间序列。锯齿抬升后回落=正常；单调爬升不回落=停滞。",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROM}" },
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 56 },
+      "id": 30,
+      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "${DS_PROM}" }, "expr": "max by (name) (debezium_metrics_MilliSecondsSinceLastEvent{context=\"streaming\"})", "legendFormat": "{{name}}" } ],
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "fieldConfig": { "defaults": { "unit": "ms", "custom": { "drawStyle": "line", "fillOpacity": 10, "showPoints": "never" }, "noValue": "无源端指标数据" }, "overrides": [] }
+    },
+    {
+      "type": "timeseries",
+      "title": "断连次数 趋势 (increase)",
+      "description": "increase(debezium_metrics_NumberOfDisconnects[5m])。任一时间窗内 >0 就说明发生了断连。",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROM}" },
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 56 },
+      "id": 31,
+      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "${DS_PROM}" }, "expr": "sum by (name) (increase(debezium_metrics_NumberOfDisconnects{context=\"streaming\"}[5m]))", "legendFormat": "{{name}}" } ],
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "drawStyle": "bars", "fillOpacity": 60, "showPoints": "never" }, "color": { "mode": "fixed", "fixedColor": "orange" }, "noValue": "无源端指标数据" }, "overrides": [] }
+    },
+    {
+      "type": "row",
+      "title": "源端事件流与错误 (源端指标)",
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 63 },
+      "id": 32,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "源端事件速率 (events/s, 防陈旧)",
+      "description": "rate(debezium_metrics_TotalNumberOfEventsSeen[5m])。源端每秒读到的 binlog 事件数。不受写入冻结影响：Connected=1 但此值长期为 0 = 连着却没事件(源库空闲 或 上游 binlog 异常)。",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROM}" },
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 64 },
+      "id": 33,
+      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "${DS_PROM}" }, "expr": "sum by (name) (rate(debezium_metrics_TotalNumberOfEventsSeen{context=\"streaming\"}[5m]))", "legendFormat": "{{name}}" } ],
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["last", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "fieldConfig": { "defaults": { "unit": "cps", "custom": { "drawStyle": "line", "fillOpacity": 10, "showPoints": "never" }, "noValue": "无源端指标数据" }, "overrides": [] }
+    },
+    {
+      "type": "timeseries",
+      "title": "源端错误事件 (increase)",
+      "description": "increase(debezium_metrics_NumberOfErroneousEvents[5m])。源端解析/处理出错的事件数。任一窗口 >0 都要查。",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROM}" },
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 64 },
+      "id": 34,
+      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "${DS_PROM}" }, "expr": "sum by (name) (increase(debezium_metrics_NumberOfErroneousEvents{context=\"streaming\"}[5m]))", "legendFormat": "{{name}}" } ],
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "drawStyle": "bars", "fillOpacity": 60, "showPoints": "never" }, "color": { "mode": "fixed", "fixedColor": "red" }, "noValue": "无源端指标数据" }, "overrides": [] }
+    }
+  ]
+}

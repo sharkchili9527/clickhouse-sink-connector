@@ -87,8 +87,89 @@ class DDLSchemaChangeWaiterTest {
     void testCaseInsensitiveExtraction() {
         String ddl = "alter table `DB`.`TBL` add column `MixedCase` String";
         List<String> columns = DDLSchemaChangeWaiter.extractColumnNames(ddl,
-                Pattern.compile("ADD\\s+COLUMN\\s+`?([^`\\s]+)`?", Pattern.CASE_INSENSITIVE));
+                DDLSchemaChangeWaiter.ADD_COLUMN_PATTERN);
         assertEquals(1, columns.size());
         assertEquals("MixedCase", columns.get(0));
+    }
+
+    // ---------------------------------------------------------------------
+    // Quoted identifiers. A backtick-quoted name may contain spaces, commas
+    // and reserved words, and `` is an escaped backtick. Getting any of these
+    // wrong makes the waiter poll a column that cannot exist, which costs the
+    // full 30s timeout on every ADD (measured 31.9s) and makes DROP return
+    // without ever confirming the real column is gone.
+    // ---------------------------------------------------------------------
+
+    @Test
+    void addColumnWithSpaceInQuotedName() {
+        List<String> columns = DDLSchemaChangeWaiter.extractColumnNames(
+                "ALTER TABLE db.tbl "
+                        + "ADD COLUMN IF NOT EXISTS `space col` Nullable(Int32)",
+                DDLSchemaChangeWaiter.ADD_COLUMN_PATTERN);
+        assertEquals(List.of("space col"), columns);
+    }
+
+    @Test
+    void dropColumnWithSpaceInQuotedName() {
+        List<String> columns = DDLSchemaChangeWaiter.extractColumnNames(
+                "ALTER TABLE db.tbl DROP COLUMN IF EXISTS `space col`",
+                DDLSchemaChangeWaiter.DROP_COLUMN_PATTERN);
+        assertEquals(List.of("space col"), columns);
+    }
+
+    @Test
+    void addColumnMixesQuotedAndBareNames() {
+        List<String> columns = DDLSchemaChangeWaiter.extractColumnNames(
+                "ALTER TABLE db.tbl "
+                        + "ADD COLUMN IF NOT EXISTS normal_col Int32, "
+                        + "ADD COLUMN IF NOT EXISTS `space col` String, "
+                        + "ADD COLUMN IF NOT EXISTS CamelCase Int64",
+                DDLSchemaChangeWaiter.ADD_COLUMN_PATTERN);
+        assertEquals(List.of("normal_col", "space col", "CamelCase"), columns);
+    }
+
+    @Test
+    void addColumnAcceptsReservedWordAndPunctuation() {
+        List<String> columns = DDLSchemaChangeWaiter.extractColumnNames(
+                "ALTER TABLE db.tbl "
+                        + "ADD COLUMN `select` Int32, "
+                        + "ADD COLUMN `if` Int32, "
+                        + "ADD COLUMN `a-b` Int32, "
+                        + "ADD COLUMN `a,b` Int32",
+                DDLSchemaChangeWaiter.ADD_COLUMN_PATTERN);
+        assertEquals(List.of("select", "if", "a-b", "a,b"), columns);
+    }
+
+    @Test
+    void addColumnUnescapesDoubledBacktick() {
+        List<String> columns = DDLSchemaChangeWaiter.extractColumnNames(
+                "ALTER TABLE db.tbl ADD COLUMN `a``b` Int32",
+                DDLSchemaChangeWaiter.ADD_COLUMN_PATTERN);
+        assertEquals(List.of("a`b"), columns);
+    }
+
+    @Test
+    void bareNameStopsAtWhitespaceAndComma() {
+        List<String> columns = DDLSchemaChangeWaiter.extractColumnNames(
+                "ALTER TABLE db.tbl add column a Int64,add column b DateTime64(3)",
+                DDLSchemaChangeWaiter.ADD_COLUMN_PATTERN);
+        assertEquals(List.of("a", "b"), columns);
+    }
+
+    @Test
+    void ifNotExistsIsNotMistakenForTheColumn() {
+        List<String> columns = DDLSchemaChangeWaiter.extractColumnNames(
+                "ALTER TABLE db.tbl ADD COLUMN IF NOT EXISTS ship_spec Nullable(String)",
+                DDLSchemaChangeWaiter.ADD_COLUMN_PATTERN);
+        assertEquals(List.of("ship_spec"), columns);
+    }
+
+    @Test
+    void dropColumnMixesQuotedAndBareNames() {
+        List<String> columns = DDLSchemaChangeWaiter.extractColumnNames(
+                "ALTER TABLE db.tbl "
+                        + "DROP COLUMN a5_x, DROP COLUMN `space col`, DROP COLUMN a3_x",
+                DDLSchemaChangeWaiter.DROP_COLUMN_PATTERN);
+        assertEquals(List.of("a5_x", "space col", "a3_x"), columns);
     }
 }

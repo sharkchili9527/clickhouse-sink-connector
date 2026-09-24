@@ -37,6 +37,28 @@ public class DDLSchemaChangeWaiter {
     public static final long DEFAULT_POLL_INTERVAL_MS = 100;
 
     /**
+     * Matches one SQL identifier, either backtick-quoted or bare, as two
+     * alternative capturing groups.
+     *
+     * <p>The previous form was {@code `?([^`\s]+)`?}: the backticks were
+     * optional but the capture still forbade whitespace, so
+     * {@code ADD COLUMN `space col`} yielded {@code space}. That column never
+     * appears in {@code system.columns}, so the waiter blocked for the full
+     * 30s timeout on every such DDL (measured 31.9s, reproducible), and the
+     * real column was never waited for. On the DROP side the same misparse is
+     * worse than slow: the bogus name is absent from the start, so the waiter
+     * returns immediately without confirming the real column is gone from
+     * every replica.</p>
+     *
+     * <p>Keeping the quoted and bare cases as separate alternatives is what
+     * allows the quoted branch to accept spaces -- and {@code ``} as an
+     * escaped backtick -- while the bare branch still stops at whitespace or
+     * a comma. Callers must therefore take the first non-null group; see
+     * {@link #firstNonNullGroup(Matcher, int...)}.</p>
+     */
+    private static final String IDENTIFIER = "(?:`((?:``|[^`])+)`|([^\\s,]+))";
+
+    /**
      * Regex to extract column names from ALTER TABLE ... ADD COLUMN statements.
      * Matches both backtick-quoted and unquoted column names.
      *
@@ -48,7 +70,7 @@ public class DDLSchemaChangeWaiter {
      * until it times out, and the real column is never waited for at all.</p>
      */
     static final Pattern ADD_COLUMN_PATTERN = Pattern.compile(
-            "ADD\\s+COLUMN\\s+(?:IF\\s+NOT\\s+EXISTS\\s+)?`?([^`\\s]+)`?",
+            "ADD\\s+COLUMN\\s+(?:IF\\s+NOT\\s+EXISTS\\s+)?" + IDENTIFIER,
             Pattern.CASE_INSENSITIVE
     );
 
@@ -59,13 +81,22 @@ public class DDLSchemaChangeWaiter {
      * {@link #ADD_COLUMN_PATTERN}.</p>
      */
     static final Pattern DROP_COLUMN_PATTERN = Pattern.compile(
-            "DROP\\s+COLUMN\\s+(?:IF\\s+EXISTS\\s+)?`?([^`\\s]+)`?",
+            "DROP\\s+COLUMN\\s+(?:IF\\s+EXISTS\\s+)?" + IDENTIFIER,
             Pattern.CASE_INSENSITIVE
     );
 
-    /** Regex to extract database.table from ALTER TABLE statements. */
+    /**
+     * Regex to extract database.table from ALTER TABLE statements.
+     *
+     * <p>Both parts use {@link #IDENTIFIER}, so a quoted database or table
+     * name containing spaces resolves to the real name and the waiter queries
+     * the right row in {@code system.columns}. The unquoted database
+     * alternative additionally excludes {@code .} so it cannot swallow the
+     * separator.</p>
+     */
     private static final Pattern ALTER_TABLE_PATTERN = Pattern.compile(
-            "ALTER\\s+TABLE\\s+`?([^`\\s.]+)`?\\.`?([^`\\s,]+)`?",
+            "ALTER\\s+TABLE\\s+(?:`((?:``|[^`])+)`|([^`\\s.]+))"
+                    + "\\." + IDENTIFIER,
             Pattern.CASE_INSENSITIVE
     );
 
@@ -107,8 +138,13 @@ public class DDLSchemaChangeWaiter {
             return;
         }
 
-        String database = tableMatcher.group(1);
-        String table = tableMatcher.group(2);
+        // Groups 1/2 are the quoted and bare database, 3/4 the table; exactly
+        // one of each pair matches.
+        String database = firstNonNullGroup(tableMatcher, 1, 2);
+        String table = firstNonNullGroup(tableMatcher, 3, 4);
+        if (database == null || table == null) {
+            return;
+        }
 
         List<String> addedColumns = extractColumnNames(ddl, ADD_COLUMN_PATTERN);
         List<String> droppedColumns = extractColumnNames(ddl, DROP_COLUMN_PATTERN);
@@ -249,8 +285,34 @@ public class DDLSchemaChangeWaiter {
         List<String> columns = new ArrayList<>();
         Matcher matcher = pattern.matcher(ddl);
         while (matcher.find()) {
-            columns.add(matcher.group(1));
+            String column = firstNonNullGroup(matcher, 1, 2);
+            if (column != null) {
+                columns.add(column);
+            }
         }
         return columns;
+    }
+
+    /**
+     * Returns the first of the given groups that matched, with {@code ``}
+     * unescaped back to a single backtick so the result compares equal to what
+     * {@code system.columns} reports.
+     *
+     * <p>{@link #IDENTIFIER} offers the quoted and bare forms as alternatives,
+     * so only one of its two groups is ever non-null and the caller cannot just
+     * read group 1.</p>
+     *
+     * @param matcher a matcher positioned on a successful match.
+     * @param groups  candidate group indexes, in priority order.
+     * @return the identifier, or null when none of the groups matched.
+     */
+    private static String firstNonNullGroup(Matcher matcher, int... groups) {
+        for (int group : groups) {
+            String value = matcher.group(group);
+            if (value != null) {
+                return value.replace("``", "`");
+            }
+        }
+        return null;
     }
 }

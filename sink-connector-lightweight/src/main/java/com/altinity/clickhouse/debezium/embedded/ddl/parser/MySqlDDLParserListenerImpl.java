@@ -132,6 +132,25 @@ public class MySqlDDLParserListenerImpl extends MySQLDDLParserBaseListener {
     private final Set<String> notNullColumnNames = new HashSet<>();
 
     /**
+     * Column comments collected while walking an ALTER TABLE, rendered as
+     * follow-up statements once the ALTER itself has been assembled.
+     *
+     * <p>ClickHouse carries a column comment in its own ALTER action
+     * ({@code COMMENT COLUMN}), so it cannot ride along inside the
+     * {@code ADD COLUMN} clause the way MySQL writes it. Emitting each one as
+     * a separate statement -- the shape {@link #postProcessModifyColumn}
+     * already uses -- leaves the clause assembly untouched, and
+     * {@code DebeziumChangeEventCapture.executeDDL} splits the generated query
+     * on newlines and runs each line in order.</p>
+     *
+     * <p>Deferred to the end of the statement rather than appended in place,
+     * because a multi-column ALTER emits its clauses comma-separated under a
+     * single {@code ALTER TABLE} prefix; injecting a newline mid-list would
+     * strand every remaining clause on the comment's line.</p>
+     */
+    private final List<String> pendingColumnComments = new ArrayList<>();
+
+    /**
      * Constructor for initializing the MySqlDDLParserListenerImpl instance.
      *
      * @param writer         The database writer instance.
@@ -841,6 +860,7 @@ public class MySqlDDLParserListenerImpl extends MySQLDDLParserBaseListener {
         boolean isNullColumn = true;
         boolean isGeneratedColumn = false;
         String generatedColumn = "";
+        String columnComment = null;
 
         for (ParseTree colDefTree : ((MySqlParser.ColumnDeclarationContext) subtree).children) {
             if (colDefTree instanceof MySqlParser.FullColumnNameContext) {
@@ -873,6 +893,14 @@ public class MySqlDDLParserListenerImpl extends MySQLDDLParserBaseListener {
                         if (uniqueKeyColumns.length() == 0 && columnName != null) {
                             uniqueKeyColumns.append(columnName);
                         }
+                    } else if (colDefinitionChildTree instanceof MySqlParser.CommentColumnConstraintContext) {
+                        // COMMENT 'text'. ClickHouse accepts a column comment
+                        // inline in CREATE TABLE, so unlike the ALTER path this
+                        // needs no follow-up statement -- see the commentClause
+                        // woven into the three column-emitting branches below.
+                        if (colDefinitionChildTree.getChildCount() >= 2) {
+                            columnComment = colDefinitionChildTree.getChild(1).getText();
+                        }
                     } else if (colDefinitionChildTree instanceof MySqlParser.GeneratedColumnConstraintContext) {
                         for (ParseTree generatedColumnTree: ((MySqlParser.GeneratedColumnConstraintContext) colDefinitionChildTree).children) {
                             if (generatedColumnTree instanceof MySqlParser.ExpressionContext) {
@@ -899,6 +927,14 @@ public class MySqlDDLParserListenerImpl extends MySQLDDLParserBaseListener {
                     }
                 }
 
+                // Rendered once and woven into every branch below so a column
+                // without a comment produces byte-identical output to before.
+                // ClickHouse wants the comment after the type and, for a
+                // generated column, after the ALIAS expression:
+                //   name Type [DEFAULT|MATERIALIZED|ALIAS expr] [COMMENT '...']
+                String commentClause = columnComment == null ? ""
+                        : " COMMENT " + toClickHouseStringLiteral(columnComment);
+
                 if (isGeneratedColumn) {
                     // For generated columns, handle NULL and NOT NULL constraints.
                     if (isNullColumn) {
@@ -907,7 +943,8 @@ public class MySqlDDLParserListenerImpl extends MySQLDDLParserBaseListener {
                         this.query.append(colDataType);
                     }
 
-                    this.query.append(" ").append(Constants.ALIAS).append(" ").append(generatedColumn).append(",");
+                    this.query.append(" ").append(Constants.ALIAS).append(" ").append(generatedColumn)
+                            .append(commentClause).append(",");
                     continue;
                 }
 
@@ -915,9 +952,10 @@ public class MySqlDDLParserListenerImpl extends MySQLDDLParserBaseListener {
                 String lowerCaseDataType = colDataType.toLowerCase();
                 if (!Constants.NULLABLE_NOT_SUPPORTED_DATA_TYPES.contains(lowerCaseDataType) && isNullColumn) {
                     this.query.append(Constants.NULLABLE).append("(").append(colDataType)
-                            .append(")").append(",");
+                            .append(")").append(commentClause).append(",");
                 } else {
-                    this.query.append(colDataType).append(" ").append(Constants.NOT_NULLABLE).append(" ").append(",");
+                    this.query.append(colDataType).append(" ").append(Constants.NOT_NULLABLE)
+                            .append(commentClause).append(" ").append(",");
                 }
 
                 // Add column name to the set of column names.
@@ -1110,6 +1148,8 @@ public class MySqlDDLParserListenerImpl extends MySQLDDLParserBaseListener {
 
         String defaultModifier = null;
 
+        String columnComment = null;
+
         StringBuffer columnPositionModifier = new StringBuffer();
 
         boolean isNullColumn = false;
@@ -1174,7 +1214,13 @@ public class MySqlDDLParserListenerImpl extends MySQLDDLParserBaseListener {
                             defaultModifier = "DEFAULT " + columnDefChild.getChild(1).getText();
                         }
                     } else if (columnDefChild instanceof MySqlParser.CommentColumnConstraintContext) {
-                        // Ignore comment for now.
+                        // COMMENT 'text' -- the literal is child 1, still
+                        // quoted and MySQL-escaped as it appeared in the
+                        // source statement. It becomes its own ClickHouse
+                        // statement, see pendingColumnComments.
+                        if (columnDefChild.getChildCount() >= 2) {
+                            columnComment = columnDefChild.getChild(1).getText();
+                        }
                     }
                     else {
                         columnType = columnDefChild.getText();
@@ -1239,6 +1285,16 @@ public class MySqlDDLParserListenerImpl extends MySQLDDLParserBaseListener {
             postProcessModifyColumn(this.tableName, columnName, newColumnName, columnType);
         }
 
+        if (columnComment != null && columnName != null) {
+            // CHANGE COLUMN performs its rename in a follow-up statement, so
+            // by the time the comment is applied the column carries the new
+            // name and that is what has to be targeted.
+            String commentedColumn = newColumnName != null ? newColumnName : columnName;
+            pendingColumnComments.add(String.format(Constants.ALTER_TABLE, destinationTableName(this.tableName))
+                    + " " + String.format(Constants.COMMENT_COLUMN, commentedColumn,
+                    toClickHouseStringLiteral(columnComment)));
+        }
+
         String trimmedQuery = this.query.toString().trim();
         this.query.delete(0, this.query.toString().length()).append(trimmedQuery);
     }
@@ -1262,12 +1318,115 @@ public class MySqlDDLParserListenerImpl extends MySQLDDLParserBaseListener {
         // rename", and since DDL is retried indefinitely that stalls the
         // ENTIRE replication stream, not just this table.
         String rename = "ALTER TABLE %s " + Constants.RENAME_COLUMN + " %s to %s";
-        // If the tableName already includes the databaseName don't include databaseName in the query.
-        if (tableName.contains(".")) {
-            this.query.append(String.format(rename, tableName, oldCol, newCol));
-        } else {
-            this.query.append(String.format(rename, databaseName + "." + tableName, oldCol, newCol));
+        // The destination database, never the source one. A source-qualified
+        // name such as `sourcedb.t` used to be passed through verbatim, so the
+        // rename targeted a database that does not exist in ClickHouse and
+        // failed with Code: 81 UNKNOWN_DATABASE -- measured on 22.8.21.38
+        // against a clickhouse.database.override.map deployment. The rename was
+        // then abandoned, so the column silently kept its old name while the
+        // MODIFY COLUMN emitted just above had already succeeded.
+        this.query.append(String.format(rename, destinationTableName(tableName), oldCol, newCol));
+    }
+
+    /**
+     * Qualifies a table name with the destination database.
+     *
+     * <p>A source statement may name the table as {@code sourcedb.table}. The
+     * database part is dropped and replaced with {@link #databaseName}, which
+     * has already been run through the {@code clickhouse.database.override.map}
+     * translation, so the follow-up statement targets the same table as the
+     * ALTER it belongs to (see {@link #enterAlterTable}).</p>
+     *
+     * @param table the table name as it appeared in the source statement.
+     * @return the table name qualified with the destination database.
+     */
+    private String destinationTableName(String table) {
+        if (table != null && table.contains(".")) {
+            return databaseName + "." + table.substring(table.indexOf('.') + 1);
         }
+        return databaseName + "." + table;
+    }
+
+    /**
+     * Renders a MySQL string literal as a ClickHouse string literal.
+     *
+     * <p>The input arrives straight from the parse tree, so it is still
+     * quoted and escaped the way the source statement wrote it. It is decoded
+     * first and then re-encoded, because the two dialects do not agree on
+     * escaping: MySQL accepts a doubled quote ({@code ''}) where ClickHouse
+     * wants a backslash, and either dialect may carry a literal newline.</p>
+     *
+     * <p>A raw newline is the dangerous one:
+     * {@code DebeziumChangeEventCapture.executeDDL} splits the generated query
+     * on {@code \n} and executes each line, so an un-escaped one would tear
+     * the statement in half and leave two syntax errors -- which, DDL being
+     * retried indefinitely, stalls the whole replication stream.</p>
+     *
+     * @param mysqlLiteral the quoted literal as written in the source DDL.
+     * @return a quoted, escaped ClickHouse string literal.
+     */
+    static String toClickHouseStringLiteral(String mysqlLiteral) {
+        String text = decodeMySqlLiteral(mysqlLiteral);
+        StringBuilder out = new StringBuilder(text.length() + 2).append('\'');
+        for (int i = 0; i < text.length(); i++) {
+            char c = text.charAt(i);
+            switch (c) {
+                case '\\': out.append("\\\\"); break;
+                case '\'': out.append("\\'"); break;
+                case '\n': out.append("\\n"); break;
+                case '\r': out.append("\\r"); break;
+                case '\t': out.append("\\t"); break;
+                case '\b': out.append("\\b"); break;
+                case '\0': out.append("\\0"); break;
+                default: out.append(c);
+            }
+        }
+        return out.append('\'').toString();
+    }
+
+    /**
+     * Decodes a quoted MySQL string literal to its plain text value.
+     *
+     * <p>Strips the surrounding quotes (MySQL allows either kind), collapses a
+     * doubled quote to one, and resolves backslash escapes. A literal that is
+     * not quoted at all is returned unchanged.</p>
+     *
+     * @param literal the quoted literal as written in the source DDL.
+     * @return the decoded text.
+     */
+    private static String decodeMySqlLiteral(String literal) {
+        if (literal == null || literal.length() < 2) {
+            return literal;
+        }
+        char quote = literal.charAt(0);
+        if ((quote != '\'' && quote != '"') || literal.charAt(literal.length() - 1) != quote) {
+            return literal;
+        }
+        String body = literal.substring(1, literal.length() - 1);
+        StringBuilder out = new StringBuilder(body.length());
+        for (int i = 0; i < body.length(); i++) {
+            char c = body.charAt(i);
+            if (c == quote && i + 1 < body.length() && body.charAt(i + 1) == quote) {
+                out.append(quote);
+                i++;
+            } else if (c == '\\' && i + 1 < body.length()) {
+                char escaped = body.charAt(++i);
+                switch (escaped) {
+                    case 'n': out.append('\n'); break;
+                    case 'r': out.append('\r'); break;
+                    case 't': out.append('\t'); break;
+                    case 'b': out.append('\b'); break;
+                    case '0': out.append('\0'); break;
+                    // \Z is MySQL's Ctrl-Z; anything else escapes to itself,
+                    // which covers \\ , \' and \" .
+                    case 'Z': out.append((char) 26); break;
+                    default: out.append(escaped);
+                }
+            } else {
+                out.append(c);
+            }
+        }
+        return out.toString();
     }
 
     @Override
@@ -1343,6 +1502,13 @@ public class MySqlDDLParserListenerImpl extends MySQLDDLParserBaseListener {
         // A hint in trailing position leaves the separator that preceded it
         // dangling once the hint itself emits nothing.
         removeTrailingComma();
+
+        // Column comments only now, once the ALTER's comma-separated clause
+        // list is closed, so each one is a statement of its own.
+        for (String commentStatement : pendingColumnComments) {
+            this.query.append("\n").append(commentStatement);
+        }
+        pendingColumnComments.clear();
     }
 
     /**
@@ -1448,7 +1614,10 @@ public class MySqlDDLParserListenerImpl extends MySQLDDLParserBaseListener {
                     }
                 }
             } else if (child instanceof MySqlParser.IfExistsContext) {
-                this.query.append(Constants.IF_EXISTS);
+                // Nothing to emit: Constants.DROP_TABLE already carries the
+                // guard unconditionally, so appending it again here would
+                // produce "DROP TABLE IF EXISTS IF EXISTS".
+                log.debug("Source DROP TABLE already says IF EXISTS; guard is always emitted");
             }
         }
         if (config.getBoolean(ClickHouseSinkConnectorConfigVariables

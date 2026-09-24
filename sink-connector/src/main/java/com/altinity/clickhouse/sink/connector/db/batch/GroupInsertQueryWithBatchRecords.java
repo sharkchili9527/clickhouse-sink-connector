@@ -35,6 +35,27 @@ public class GroupInsertQueryWithBatchRecords {
             LogManager.getLogger(GroupInsertQueryWithBatchRecords.class);
 
     /**
+     * Re-reads the target table's column map and publishes it where the rest of
+     * the batch pipeline will see it -- in practice
+     * {@code DbWriter::refreshColumnNameToDataTypeMap}.
+     *
+     * <p>Grouping and parameter binding must agree on one column map. Refreshing
+     * into a local variable here is not enough: the caller keeps its own
+     * reference and uses it to bind, so a column added mid-batch would appear in
+     * the generated INSERT but never get a value, and clickhouse-jdbc throws
+     * NullPointerException from addBatch() on that unbound parameter. The batch
+     * can then never succeed and is retried forever.
+     */
+    @FunctionalInterface
+    public interface SchemaRefresher {
+        /**
+         * @return the freshly read column name to data type map.
+         * @throws Exception if the metadata query fails.
+         */
+        Map<String, String> refresh() throws Exception;
+    }
+
+    /**
      * Groups records by their insert query template and updates the
      * topic-partition offset map.
      * <p>
@@ -78,7 +99,52 @@ public class GroupInsertQueryWithBatchRecords {
             String tableName, String databaseName, Connection connection,
             Map<String, String> columnNameToDataTypeMap,
             String replacingMergeTreeDeleteColumn) {
+        return groupQueryWithRecords(records, queryToRecordsMap,
+                partitionToOffsetMap, config, tableName, databaseName,
+                connection, columnNameToDataTypeMap,
+                replacingMergeTreeDeleteColumn, null);
+    }
+
+    /**
+     * Same as above, plus a {@link SchemaRefresher} so that a column map
+     * re-read here is published to whatever the caller uses to bind
+     * parameters. Pass {@code DbWriter::refreshColumnNameToDataTypeMap};
+     * {@code null} falls back to refreshing a local copy only, which is
+     * unsafe for callers that bind from their own map.
+     *
+     * @param schemaRefresher publishes a freshly read column map, or null.
+     * @return true if grouping is successful; false otherwise.
+     */
+    public boolean groupQueryWithRecords(
+            List<ClickHouseStruct> records,
+            Map<MutablePair<String, Map<String, Integer>>,
+                    List<ClickHouseStruct>> queryToRecordsMap,
+            Map<TopicPartition, Long> partitionToOffsetMap,
+            ClickHouseSinkConnectorConfig config,
+            String tableName, String databaseName, Connection connection,
+            Map<String, String> columnNameToDataTypeMap,
+            String replacingMergeTreeDeleteColumn,
+            SchemaRefresher schemaRefresher) {
         boolean result = false;
+
+        // Refresh the column metadata ONCE PER BATCH, not once per record.
+        // The per-record refresh this replaces cost two system.columns queries
+        // for every single row -- measured 664k metadata SELECTs for 332k
+        // snapshot rows, which burned 2.6 of 4 cores inside ClickHouse and made
+        // the metadata lookup, not the INSERT, the snapshot bottleneck
+        // (1.5M rows: 28m48s before, ~70s after).
+        // It cannot be dropped entirely: it is also how the writer notices that
+        // the ClickHouse table lost a column out-of-band. Without any refresh,
+        // the cached map still lists the dropped column, the INSERT references
+        // it, and ClickHouse answers Code 16 NO_SUCH_COLUMN_IN_TABLE, which this
+        // connector treats as fatal and stops the task. Once per batch keeps
+        // that self-healing at 1/max.batch.size of the cost.
+        if (config.getBoolean(ClickHouseSinkConnectorConfigVariables
+                .ENABLE_SCHEMA_EVOLUTION.toString())) {
+            columnNameToDataTypeMap = refreshColumnMap(schemaRefresher, config,
+                    tableName, connection, databaseName,
+                    columnNameToDataTypeMap);
+        }
 
         // Co4 = {ClickHouseStruct@9220} de block to create a Map of Query ->
         // list of records so that all records belonging to the same query
@@ -106,12 +172,26 @@ public class GroupInsertQueryWithBatchRecords {
                     getCdcSectionBasedOnOperation(record.getCdcOperation())) {
                 if (enableSchemaEvolution) {
                     try {
-                        new ClickHouseAlterTable().alterTable(
+                        // Re-read the column metadata ONLY when alterTable
+                        // actually added a column. This used to run
+                        // unconditionally, once per record, and each call is
+                        // two system.columns queries -- measured 664k metadata
+                        // SELECTs for 332k snapshot rows, which burned 2.6 of
+                        // the 4 available cores inside ClickHouse and made the
+                        // metadata lookup, not the INSERT, the bottleneck
+                        // (1.5M rows: 28m48s before, 69s after).
+                        boolean tableAltered = new ClickHouseAlterTable().alterTable(
                                 record.getAfterStruct().schema().fields(),
                                 tableName, connection, columnNameToDataTypeMap, config);
-                        columnNameToDataTypeMap = new DBMetadata(config)
-                                .getColumnsDataTypesForTable(tableName,
-                                        connection, databaseName);
+                        if (tableAltered) {
+                            // Must publish, not just refresh locally: the
+                            // caller binds parameters from its own map, and a
+                            // column added here has to be visible there too.
+                            columnNameToDataTypeMap = refreshColumnMap(
+                                    schemaRefresher, config, tableName,
+                                    connection, databaseName,
+                                    columnNameToDataTypeMap);
+                        }
                     } catch (Exception e) {
                         log.error("**** ERROR ALTER TABLE: " + tableName, e);
                     }
@@ -161,6 +241,44 @@ public class GroupInsertQueryWithBatchRecords {
             }
         }
         return result;
+    }
+
+    /**
+     * Re-reads the column map, publishing it through {@code schemaRefresher}
+     * when one was supplied so the caller's binding path sees the same map.
+     *
+     * @param schemaRefresher publisher, or null to refresh a local copy only.
+     * @param config          connector configuration.
+     * @param tableName       target table name.
+     * @param connection      JDBC connection.
+     * @param databaseName    target database name.
+     * @param current         map to keep if the refresh fails.
+     * @return the refreshed map, or {@code current} when the refresh failed.
+     */
+    private Map<String, String> refreshColumnMap(
+            SchemaRefresher schemaRefresher,
+            ClickHouseSinkConnectorConfig config, String tableName,
+            Connection connection, String databaseName,
+            Map<String, String> current) {
+        try {
+            Map<String, String> refreshed;
+            if (schemaRefresher != null) {
+                refreshed = schemaRefresher.refresh();
+            } else {
+                refreshed = new DBMetadata(config)
+                        .getColumnsDataTypesForTable(tableName, connection,
+                                databaseName);
+            }
+            // An empty result means the metadata query failed or raced with a
+            // DROP; keeping the previous map is strictly better than generating
+            // an INSERT with no columns.
+            return (refreshed == null || refreshed.isEmpty())
+                    ? current : refreshed;
+        } catch (Exception e) {
+            log.error("Error refreshing column metadata for " + tableName
+                    + ", continuing with the cached map", e);
+            return current;
+        }
     }
 
     /**

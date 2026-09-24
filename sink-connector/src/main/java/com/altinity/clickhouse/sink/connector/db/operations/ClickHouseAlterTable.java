@@ -108,8 +108,15 @@ public class ClickHouseAlterTable
      *                   ALTER TABLE query
      * @param columnNameToDataTypeMap a map of current column names
      *                                to data types
+     * @return {@code true} if an ALTER TABLE was issued, so the caller's
+     *         column map is now stale and has to be re-read; {@code false}
+     *         when every field already exists and nothing was changed.
+     *         The caller MUST NOT re-read the column metadata when this is
+     *         false: doing that unconditionally cost two system.columns
+     *         queries per record (measured 664k metadata SELECTs for 332k
+     *         rows), which made ClickHouse the snapshot bottleneck.
      */
-    public void alterTable(List<Field> modifiedFields, String tableName,
+    public boolean alterTable(List<Field> modifiedFields, String tableName,
                            Connection connection,
                            Map<String, String> columnNameToDataTypeMap,
                            ClickHouseSinkConnectorConfig config) throws SQLException {
@@ -145,7 +152,9 @@ public class ClickHouseAlterTable
                 } catch (Exception e) {
                     log.error(" **** ALTER TABLE EXCEPTION ", e);
                 }
+                return true;
             }
         }
+        return false;
     }
 }

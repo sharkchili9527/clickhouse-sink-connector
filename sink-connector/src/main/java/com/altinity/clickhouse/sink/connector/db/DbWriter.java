@@ -49,7 +49,11 @@ public class DbWriter extends BaseDbWriter {
     /**
      * A map holding column names and their respective data types.
      */
-    private Map<String, String> columnNameToDataTypeMap = new LinkedHashMap<>();
+    // volatile: with thread.pool.size > 1 several worker threads share one
+    // DbWriter per table, and refreshColumnNameToDataTypeMap() republishes this
+    // reference from whichever thread happens to own the current batch. Without
+    // volatile another thread can keep binding against the previous map.
+    private volatile Map<String, String> columnNameToDataTypeMap = new LinkedHashMap<>();
 
     /**
      * The cache invalidation version this writer was built at. Compared against
@@ -471,6 +475,33 @@ public class DbWriter extends BaseDbWriter {
         // than by auto-create, so leaving it stale here means the writer sees
         // an empty sorting key and silently skips the UPDATE tombstone.
         this.sortingKeyColumns = dbMetadata.getSortingKeyColumns(this.conn, database, tableName);
+    }
+
+    /**
+     * Re-reads only the column list from ClickHouse and republishes it on this
+     * writer, returning the fresh map.
+     *
+     * <p>Unlike {@link #updateColumnNameToDataTypeMap()} this does not touch the
+     * engine or the sorting key, because the callers that need it are reacting to
+     * a column being added or dropped, which changes neither. It is therefore
+     * cheap enough to call once per batch.
+     *
+     * <p>The point of storing the result here rather than in a local variable is
+     * that the batch pipeline reads this map twice: once to build the INSERT
+     * column list and its parameter index map, and again to bind the parameters.
+     * When only the first read saw the fresh schema, the generated INSERT could
+     * carry a placeholder that the binding loop never visits, and clickhouse-jdbc
+     * then throws NullPointerException from addBatch() on an unbound parameter --
+     * a batch that can never succeed and is retried forever.
+     *
+     * @return the refreshed column name to data type map.
+     * @throws SQLException if the metadata query fails.
+     */
+    public Map<String, String> refreshColumnNameToDataTypeMap()
+            throws SQLException {
+        this.columnNameToDataTypeMap = dbMetadata.getColumnsDataTypesForTable(
+                tableName, this.conn, database);
+        return this.columnNameToDataTypeMap;
     }
 
     /**

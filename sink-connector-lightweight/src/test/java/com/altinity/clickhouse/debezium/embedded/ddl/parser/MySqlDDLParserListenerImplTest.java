@@ -666,8 +666,12 @@ public class MySqlDDLParserListenerImplTest {
         mySQLDDLParserService.parseSql(alterDBAddColumnNonNullable, "contacts", clickHouseQueryNonNullable);
         //Assert.assertTrue(clickHouseQuery.toString().equalsIgnoreCase("ALTER TABLE contacts MODIFY COLUMN last_name Nullable(String)"));
         log.info("CLICKHOUSE QUERY" + clickHouseQueryNonNullable);
+        // The rename targets the DESTINATION database, matching the MODIFY
+        // COLUMN on the line above. Passing the source-qualified name through
+        // verbatim made the rename fail with Code: 81 UNKNOWN_DATABASE and be
+        // abandoned, so the column silently kept its old name.
         Assert.assertTrue(clickHouseQueryNonNullable.toString().equalsIgnoreCase("ALTER TABLE employees.`table_fcdd63fd_0c60_11ef_a293_cfcc8bfdbf55` MODIFY COLUMN col1 Nullable(String) \n" +
-                "ALTER TABLE database_1.`table_fcdd63fd_0c60_11ef_a293_cfcc8bfdbf55` RENAME COLUMN IF EXISTS col1 to new_col"));
+                "ALTER TABLE employees.`table_fcdd63fd_0c60_11ef_a293_cfcc8bfdbf55` RENAME COLUMN IF EXISTS col1 to new_col"));
     }
 
     @Test
@@ -866,7 +870,7 @@ public class MySqlDDLParserListenerImplTest {
         String sql = "truncate table add_test";
         mySQLDDLParserService.parseSql(sql, "table1", clickHouseQuery);
 
-        Assert.assertTrue(clickHouseQuery.toString().equalsIgnoreCase("TRUNCATE TABLE employees.add_test"));
+        Assert.assertTrue(clickHouseQuery.toString().equalsIgnoreCase("TRUNCATE TABLE IF EXISTS employees.add_test"));
     }
 
     @Test
@@ -879,7 +883,7 @@ public class MySqlDDLParserListenerImplTest {
         // When the table name is already qualified (mydb.add_test), the method should
         // strip the source database and use the configured databaseName instead,
         // producing employees.add_test (not employees.mydb.add_test).
-        Assert.assertTrue(clickHouseQuery.toString().equalsIgnoreCase("TRUNCATE TABLE employees.add_test"));
+        Assert.assertTrue(clickHouseQuery.toString().equalsIgnoreCase("TRUNCATE TABLE IF EXISTS employees.add_test"));
     }
 
     @Test
@@ -894,7 +898,7 @@ public class MySqlDDLParserListenerImplTest {
         parser.parseSql("TRUNCATE TABLE add_test", "table1", clickHouseQuery);
 
         Assert.assertTrue(
-                "TRUNCATE TABLE employees.add_test ON CLUSTER `{cluster}`"
+                "TRUNCATE TABLE IF EXISTS employees.add_test ON CLUSTER `{cluster}`"
                         .equalsIgnoreCase(clickHouseQuery.toString()));
     }
 
@@ -905,7 +909,7 @@ public class MySqlDDLParserListenerImplTest {
         String sql = "drop table mydb.add_test";
         mySQLDDLParserService.parseSql(sql, "table1", clickHouseQuery);
 
-        Assert.assertTrue(clickHouseQuery.toString().equalsIgnoreCase("DROP TABLE employees.add_test"));
+        Assert.assertTrue(clickHouseQuery.toString().equalsIgnoreCase("DROP TABLE IF EXISTS employees.add_test"));
     }
 
     @Test
@@ -925,7 +929,7 @@ public class MySqlDDLParserListenerImplTest {
         String sql = "drop table add_test";
         mySQLDDLParserService.parseSql(sql, "table1", clickHouseQuery);
 
-        Assert.assertTrue(clickHouseQuery.toString().equalsIgnoreCase("DROP TABLE employees.add_test"));
+        Assert.assertTrue(clickHouseQuery.toString().equalsIgnoreCase("DROP TABLE IF EXISTS employees.add_test"));
     }
 
     @Test
@@ -933,7 +937,10 @@ public class MySqlDDLParserListenerImplTest {
         StringBuffer clickHouseQuery = new StringBuffer();
 
         String sql = "drop table add_test";
-        String expectedClickHouseQuery = "DROP TABLE employees.add_test";
+        // The guard is emitted even though the source statement omits it: a
+        // replayed drop, or a table auto-create never got around to building,
+        // would otherwise fail with Code: 60 and be abandoned.
+        String expectedClickHouseQuery = "DROP TABLE IF EXISTS employees.add_test";
         mySQLDDLParserService.parseSql(sql, "table1", clickHouseQuery);
 
         Assert.assertTrue(clickHouseQuery.toString().equalsIgnoreCase(expectedClickHouseQuery));
@@ -945,6 +952,7 @@ public class MySqlDDLParserListenerImplTest {
 
         String sql = "drop table if exists add_test";
         mySQLDDLParserService.parseSql(sql, "table1", clickHouseQuery);
+        // Exactly one guard, not "IF EXISTS IF EXISTS".
         String expectedSql = "DROP TABLE IF EXISTS employees.add_test";
         Assert.assertTrue(clickHouseQuery.toString().equalsIgnoreCase(expectedSql));
     }
@@ -972,7 +980,7 @@ public class MySqlDDLParserListenerImplTest {
         String sql = "drop table add_test, add_test2";
         mySQLDDLParserService.parseSql(sql, "table1", clickHouseQuery);
 
-        Assert.assertTrue(clickHouseQuery.toString().equalsIgnoreCase("drop table employees.add_test,employees.add_test2"));
+        Assert.assertTrue(clickHouseQuery.toString().equalsIgnoreCase("drop table if exists employees.add_test,employees.add_test2"));
     }
 
     @Test
@@ -1123,7 +1131,11 @@ public class MySqlDDLParserListenerImplTest {
         String sql = "ALTER TABLE test_table ADD COLUMN col1 varchar(255) COMMENT 'test column';";
         mySQLDDLParserService.parseSql(sql, "", clickHouseQuery);
 
-        Assert.assertTrue(clickHouseQuery.toString().equalsIgnoreCase("ALTER TABLE employees.test_table ADD COLUMN IF NOT EXISTS col1 Nullable(String)"));
+        // ClickHouse has no inline column comment, so it arrives as a
+        // follow-up statement that executeDDL runs after the ADD COLUMN.
+        Assert.assertTrue(clickHouseQuery.toString().equalsIgnoreCase(
+                "ALTER TABLE employees.test_table ADD COLUMN IF NOT EXISTS col1 Nullable(String)\n" +
+                "ALTER TABLE employees.test_table COMMENT COLUMN IF EXISTS col1 'test column'"));
     }
 
     @Test
@@ -1133,7 +1145,217 @@ public class MySqlDDLParserListenerImplTest {
         String sql = "ALTER TABLE test_table ADD COLUMN col1 decimal(10,2) COMMENT 'test column';";
         mySQLDDLParserService.parseSql(sql, "", clickHouseQuery);
 
-        Assert.assertTrue(clickHouseQuery.toString().equalsIgnoreCase("ALTER TABLE employees.test_table ADD COLUMN IF NOT EXISTS col1 Nullable(Decimal(10,2))"));
+        Assert.assertTrue(clickHouseQuery.toString().equalsIgnoreCase(
+                "ALTER TABLE employees.test_table ADD COLUMN IF NOT EXISTS col1 Nullable(Decimal(10,2))\n" +
+                "ALTER TABLE employees.test_table COMMENT COLUMN IF EXISTS col1 'test column'"));
+    }
+
+    @Test
+    public void testAlterTableAddColumnNotNullDefaultWithComment() {
+        StringBuffer clickHouseQuery = new StringBuffer();
+
+        // The shape a schema-migration tool actually emits: constraint,
+        // default and comment all on the same column.
+        String sql = "ALTER TABLE test_table ADD test_flag int NOT NULL DEFAULT 0 COMMENT 'temporary';";
+        mySQLDDLParserService.parseSql(sql, "", clickHouseQuery);
+
+        Assert.assertTrue(clickHouseQuery.toString().equalsIgnoreCase(
+                "ALTER TABLE employees.test_table ADD COLUMN IF NOT EXISTS test_flag Int32 DEFAULT 0\n" +
+                "ALTER TABLE employees.test_table COMMENT COLUMN IF EXISTS test_flag 'temporary'"));
+    }
+
+    @Test
+    public void testAlterTableModifyColumnWithComment() {
+        StringBuffer clickHouseQuery = new StringBuffer();
+
+        String sql = "ALTER TABLE test_table MODIFY COLUMN col1 varchar(255) NULL COMMENT 'changed';";
+        mySQLDDLParserService.parseSql(sql, "", clickHouseQuery);
+
+        Assert.assertTrue(clickHouseQuery.toString().equalsIgnoreCase(
+                "ALTER TABLE employees.test_table MODIFY COLUMN col1 Nullable(String)\n" +
+                "ALTER TABLE employees.test_table COMMENT COLUMN IF EXISTS col1 'changed'"));
+    }
+
+    @Test
+    public void testAlterTableChangeColumnWithComment() {
+        StringBuffer clickHouseQuery = new StringBuffer();
+
+        String sql = "ALTER TABLE test_table CHANGE COLUMN col1 col2 varchar(255) NULL COMMENT 'renamed';";
+        mySQLDDLParserService.parseSql(sql, "", clickHouseQuery);
+
+        // The comment has to come last and target the NEW name: the rename is
+        // itself a follow-up statement, so col1 no longer exists by then.
+        Assert.assertTrue(clickHouseQuery.toString().equalsIgnoreCase(
+                "ALTER TABLE employees.test_table MODIFY COLUMN col1 Nullable(String) \n" +
+                "ALTER TABLE employees.test_table RENAME COLUMN IF EXISTS col1 to col2\n" +
+                "ALTER TABLE employees.test_table COMMENT COLUMN IF EXISTS col2 'renamed'"));
+    }
+
+    @Test
+    public void testAlterTableChangeColumnSourceQualifiedWithComment() {
+        StringBuffer clickHouseQuery = new StringBuffer();
+
+        // The production shape: source-qualified table name plus a comment, so
+        // all three statements have to agree on the destination database and on
+        // the column's final name.
+        String sql = "ALTER TABLE sourcedb.test_table CHANGE COLUMN col1 col2 varchar(255) NULL COMMENT '改名带注释';";
+        mySQLDDLParserService.parseSql(sql, "", clickHouseQuery);
+
+        Assert.assertTrue(clickHouseQuery.toString().equalsIgnoreCase(
+                "ALTER TABLE employees.test_table MODIFY COLUMN col1 Nullable(String) \n" +
+                "ALTER TABLE employees.test_table RENAME COLUMN IF EXISTS col1 to col2\n" +
+                "ALTER TABLE employees.test_table COMMENT COLUMN IF EXISTS col2 '改名带注释'"));
+    }
+
+    @Test
+    public void testAlterTableMultipleColumnsWithComments() {
+        StringBuffer clickHouseQuery = new StringBuffer();
+
+        String sql = "ALTER TABLE test_table ADD COLUMN col1 int COMMENT 'first', ADD COLUMN col2 int COMMENT 'second';";
+        mySQLDDLParserService.parseSql(sql, "", clickHouseQuery);
+
+        // Both comments are held back until the comma-separated clause list is
+        // closed; appending them in place would strand col2's clause on col1's
+        // comment line.
+        Assert.assertTrue(clickHouseQuery.toString().equalsIgnoreCase(
+                "ALTER TABLE employees.test_table ADD COLUMN IF NOT EXISTS col1 Nullable(Int32), ADD COLUMN IF NOT EXISTS col2 Nullable(Int32)\n" +
+                "ALTER TABLE employees.test_table COMMENT COLUMN IF EXISTS col1 'first'\n" +
+                "ALTER TABLE employees.test_table COMMENT COLUMN IF EXISTS col2 'second'"));
+    }
+
+    @Test
+    public void testAlterTableColumnCommentUsesDestinationDatabase() {
+        StringBuffer clickHouseQuery = new StringBuffer();
+
+        // Source-qualified table name: the comment must land on the same table
+        // the ADD COLUMN did, i.e. under the destination database.
+        String sql = "ALTER TABLE database_1.test_table ADD COLUMN col1 int COMMENT 'test column';";
+        mySQLDDLParserService.parseSql(sql, "", clickHouseQuery);
+
+        Assert.assertTrue(clickHouseQuery.toString().equalsIgnoreCase(
+                "ALTER TABLE employees.test_table ADD COLUMN IF NOT EXISTS col1 Nullable(Int32)\n" +
+                "ALTER TABLE employees.test_table COMMENT COLUMN IF EXISTS col1 'test column'"));
+    }
+
+    @Test
+    public void testAlterTableColumnCommentWithQuotes() {
+        StringBuffer backslashEscaped = new StringBuffer();
+        mySQLDDLParserService.parseSql(
+                "ALTER TABLE test_table ADD COLUMN col1 int COMMENT 'it\\'s here';", "", backslashEscaped);
+        Assert.assertTrue(backslashEscaped.toString().endsWith(
+                "ALTER TABLE employees.test_table COMMENT COLUMN IF EXISTS col1 'it\\'s here'"));
+
+        // MySQL's other way of writing the same comment.
+        StringBuffer doubledQuote = new StringBuffer();
+        mySQLDDLParserService.parseSql(
+                "ALTER TABLE test_table ADD COLUMN col1 int COMMENT 'it''s here';", "", doubledQuote);
+        Assert.assertTrue(doubledQuote.toString().endsWith(
+                "ALTER TABLE employees.test_table COMMENT COLUMN IF EXISTS col1 'it\\'s here'"));
+    }
+
+    @Test
+    public void testAlterTableColumnCommentWithNewlineDoesNotSplitStatement() {
+        StringBuffer clickHouseQuery = new StringBuffer();
+
+        // executeDDL splits the generated query on newlines and runs each line,
+        // so a raw newline inside the comment would tear the statement in two.
+        String sql = "ALTER TABLE test_table ADD COLUMN col1 int COMMENT 'line1\nline2';";
+        mySQLDDLParserService.parseSql(sql, "", clickHouseQuery);
+
+        Assert.assertEquals(2, clickHouseQuery.toString().split("\n").length);
+        Assert.assertTrue(clickHouseQuery.toString().equalsIgnoreCase(
+                "ALTER TABLE employees.test_table ADD COLUMN IF NOT EXISTS col1 Nullable(Int32)\n" +
+                "ALTER TABLE employees.test_table COMMENT COLUMN IF EXISTS col1 'line1\\nline2'"));
+    }
+
+    @Test
+    public void testToClickHouseStringLiteral() {
+        Assert.assertEquals("'plain'",
+                MySqlDDLParserListenerImpl.toClickHouseStringLiteral("'plain'"));
+        Assert.assertEquals("'it\\'s'",
+                MySqlDDLParserListenerImpl.toClickHouseStringLiteral("'it''s'"));
+        Assert.assertEquals("'it\\'s'",
+                MySqlDDLParserListenerImpl.toClickHouseStringLiteral("'it\\'s'"));
+        Assert.assertEquals("'a\\\\b'",
+                MySqlDDLParserListenerImpl.toClickHouseStringLiteral("'a\\\\b'"));
+        Assert.assertEquals("'a\\nb'",
+                MySqlDDLParserListenerImpl.toClickHouseStringLiteral("'a\nb'"));
+        Assert.assertEquals("'a\\nb'",
+                MySqlDDLParserListenerImpl.toClickHouseStringLiteral("'a\\nb'"));
+        Assert.assertEquals("'a\\tb'",
+                MySqlDDLParserListenerImpl.toClickHouseStringLiteral("'a\tb'"));
+        // Double-quoted literals are legal MySQL too.
+        Assert.assertEquals("'say \"hi\"'",
+                MySqlDDLParserListenerImpl.toClickHouseStringLiteral("\"say \\\"hi\\\"\""));
+        // Non-ASCII must survive untouched -- production comments are Chinese.
+        Assert.assertEquals("'临时测试使用'",
+                MySqlDDLParserListenerImpl.toClickHouseStringLiteral("'临时测试使用'"));
+    }
+
+    @Test
+    public void testCreateTableWithColumnComments() {
+        StringBuffer clickHouseQuery = new StringBuffer();
+
+        String sql = "CREATE TABLE employees.cmt1 (id INT NOT NULL COMMENT '主键', nm VARCHAR(64) NULL COMMENT '名称', PRIMARY KEY(id));";
+        mySQLDDLParserService.parseSql(sql, "", clickHouseQuery);
+
+        Assert.assertEquals(
+                "CREATE TABLE if not exists employees.cmt1(id Int32 NOT NULL COMMENT '主键' ,nm Nullable(String) COMMENT '名称',`_version` UInt64,`is_deleted` UInt8) Engine=ReplacingMergeTree(_version,is_deleted) ORDER BY (id)",
+                clickHouseQuery.toString());
+    }
+
+    @Test
+    public void testCreateTableCommentEscaping() {
+        StringBuffer quoted = new StringBuffer();
+        mySQLDDLParserService.parseSql(
+                "CREATE TABLE employees.cmt2 (v VARCHAR(64) NULL COMMENT 'it''s here');", "", quoted);
+        Assert.assertTrue(quoted.toString().contains("v Nullable(String) COMMENT 'it\\'s here'"));
+
+        // executeDDL splits the generated query on newlines, so a raw newline in
+        // a comment would tear the CREATE statement in half.
+        StringBuffer multiline = new StringBuffer();
+        mySQLDDLParserService.parseSql(
+                "CREATE TABLE employees.cmt3 (v VARCHAR(64) NULL COMMENT 'line1\nline2');", "", multiline);
+        Assert.assertEquals(1, multiline.toString().split("\n").length);
+        Assert.assertTrue(multiline.toString().contains("v Nullable(String) COMMENT 'line1\\nline2'"));
+    }
+
+    @Test
+    public void testCreateTableCommentWithCommaKeepsDataType() {
+        StringBuffer clickHouseQuery = new StringBuffer();
+
+        // The comma inside the comment used to reach the precision/scale parser
+        // (the raw column text is type and comment glued together), which logged
+        // "Error parsing precision, scale". The mapped type must stay String.
+        String sql = "CREATE TABLE employees.cmt4 (nm VARCHAR(64) NULL COMMENT '名称,含逗号');";
+        mySQLDDLParserService.parseSql(sql, "", clickHouseQuery);
+
+        Assert.assertTrue(clickHouseQuery.toString().contains("nm Nullable(String) COMMENT '名称,含逗号'"));
+    }
+
+    @Test
+    public void testCreateTableGeneratedColumnWithComment() {
+        StringBuffer clickHouseQuery = new StringBuffer();
+
+        // The comment has to follow the MATERIALIZED expression, not precede it.
+        String sql = "CREATE TABLE employees.cmt5 (fullname varchar(101) GENERATED ALWAYS AS (CONCAT(a,' ',b)) COMMENT '全名', email VARCHAR(100) NOT NULL);";
+        mySQLDDLParserService.parseSql(sql, "", clickHouseQuery);
+
+        Assert.assertTrue(clickHouseQuery.toString().contains(
+                "fullname Nullable(String) MATERIALIZED CONCAT(a,' ',b) COMMENT '全名'"));
+    }
+
+    @Test
+    public void testCreateTableWithoutCommentsIsUnchanged() {
+        StringBuffer clickHouseQuery = new StringBuffer();
+
+        // Guards the no-comment path against stray whitespace from the change.
+        String sql = "CREATE TABLE employees.cmt6 (id INT NOT NULL, nm VARCHAR(64) NULL, PRIMARY KEY(id));";
+        mySQLDDLParserService.parseSql(sql, "", clickHouseQuery);
+
+        Assert.assertEquals(
+                "CREATE TABLE if not exists employees.cmt6(id Int32 NOT NULL ,nm Nullable(String),`_version` UInt64,`is_deleted` UInt8) Engine=ReplacingMergeTree(_version,is_deleted) ORDER BY (id)",
+                clickHouseQuery.toString());
     }
 
     @Test

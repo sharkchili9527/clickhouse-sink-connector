@@ -59,4 +59,33 @@ class ClickHouseSinkConnectorConfigTest {
         assertEquals("_sign", config.getReplacingMergeTreeDeleteColumn(false));
         assertEquals("is_deleted", config.getReplacingMergeTreeDeleteColumn(true));
     }
+
+    @Test
+    void errorTableDefaultIsATableNameNotTheConfigKey() {
+        Map<String, String> properties = new HashMap<>();
+        ClickHouseSinkConnectorConfig config =
+                new ClickHouseSinkConnectorConfig(properties);
+
+        // The default used to be the config KEY ("default.error.table"), which
+        // ErrorLogger turned into the three-part, invalid
+        // "system.default.error.table" -- so every attempt to record a failed
+        // DDL failed as well. A default with a dot in it can never be a valid
+        // single table identifier here.
+        String errorTable = config.getString(
+                ClickHouseSinkConnectorConfigVariables.ERROR_TABLE_NAME.toString());
+        assertEquals("error_table", errorTable);
+    }
+
+    @Test
+    void errorTableNameCanStillBeOverridden() {
+        Map<String, String> properties = new HashMap<>();
+        properties.put(
+                ClickHouseSinkConnectorConfigVariables.ERROR_TABLE_NAME.toString(),
+                "my_errors");
+        ClickHouseSinkConnectorConfig config =
+                new ClickHouseSinkConnectorConfig(properties);
+
+        assertEquals("my_errors", config.getString(
+                ClickHouseSinkConnectorConfigVariables.ERROR_TABLE_NAME.toString()));
+    }
 }

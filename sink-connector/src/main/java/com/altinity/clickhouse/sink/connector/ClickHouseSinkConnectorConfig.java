@@ -829,7 +829,16 @@ public class ClickHouseSinkConnectorConfig extends AbstractConfig {
                 .define(
                         ERROR_TABLE_NAME.toString(),
                         Type.STRING,
-                        ERROR_TABLE_NAME.toString(),
+                        // The DEFAULT VALUE, not the key name. This used to be
+                        // ERROR_TABLE_NAME.toString(), so an unconfigured
+                        // deployment resolved the table name to the key itself
+                        // ("default.error.table") and ErrorLogger built
+                        // "system.default.error.table" -- a three-part name
+                        // ClickHouse rejects. Every attempt to record a failed
+                        // DDL therefore failed too ("Failed to log DDL error to
+                        // ClickHouse"), leaving DDL failures with no trace
+                        // outside the container log.
+                        DEFAULT_ERROR_TABLE,
                         Importance.LOW,
                         "Default table name for storing error records",
                         CONFIG_GROUP_CONNECTOR_CONFIG,

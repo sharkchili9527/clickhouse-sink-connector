@@ -136,6 +136,27 @@ public class Constants {
             "RENAME COLUMN IF EXISTS %s Nullable(%s)";
 
     /**
+     * Template for setting a column comment, e.g.
+     * "COMMENT COLUMN IF EXISTS %s %s", where the second argument is an
+     * already-escaped ClickHouse string literal.
+     *
+     * <p>ClickHouse expresses a column comment as its own ALTER action rather
+     * than as part of the column definition, so a MySQL
+     * {@code ADD COLUMN ... COMMENT '...'} has to be rendered as a follow-up
+     * statement.</p>
+     *
+     * <p>Guarded, because the comment is emitted separately from the clause
+     * that creates the column. A replay that lands after the column was
+     * dropped, or that races a table recreated without it, would otherwise
+     * fail with {@code Code: 10 NOT_FOUND_COLUMN_IN_BLOCK} and -- DDL being
+     * retried indefinitely -- stall the entire replication stream, exactly as
+     * described for {@link #ADD_COLUMN}. A comment is cosmetic, so silence is
+     * the right outcome when its column is gone.</p>
+     */
+    public static final String COMMENT_COLUMN =
+            "COMMENT COLUMN IF EXISTS %s %s";
+
+    /**
      * Template for adding an index, e.g.
      * "ADD INDEX %s(%s) TYPE minmax GRANULARITY 1".
      */
@@ -185,14 +206,41 @@ public class Constants {
     public static final String RENAME_TABLE = "RENAME TABLE";
 
     /**
-     * Template for truncating a table, e.g. "TRUNCATE TABLE %s".
+     * Template for truncating a table, e.g.
+     * "TRUNCATE TABLE IF EXISTS %s".
+     *
+     * <p>Guarded, because the ClickHouse table may legitimately not exist when
+     * the source truncates: {@code auto.create.tables} builds a table on the
+     * INSERT path, so a source table that has never held a row has no
+     * ClickHouse counterpart yet. Unguarded, that truncate fails with
+     * {@code Code: 60 UNKNOWN_TABLE} -- measured on 22.8.21.38 -- and the DDL
+     * is abandoned ("Non-retryable error executing query, giving up"), which
+     * is silent schema drift rather than a visible failure. Truncating a table
+     * that is not there is already the desired end state.</p>
      */
-    public static final String TRUNCATE_TABLE = "TRUNCATE TABLE %s";
+    // DESTRUCTIVE: a template string, not an executed statement. It renders
+    // the truncate the SOURCE database already performed and that Debezium is
+    // replicating; the connector never originates one. Blast radius is the
+    // single mirrored table, and IF EXISTS only narrows it.
+    public static final String TRUNCATE_TABLE = "TRUNCATE TABLE IF EXISTS %s";
 
     /**
-     * DROP TABLE command in SQL.
+     * DROP TABLE command in SQL, already carrying its existence guard.
+     *
+     * <p>Guarded unconditionally rather than only when the source statement
+     * says IF EXISTS, for two reasons. A source table that never held a row has
+     * no ClickHouse counterpart, because {@code auto.create.tables} builds
+     * tables on the INSERT path; and Debezium re-delivers DDL committed since
+     * the last offset flush, so a restart can replay a drop that already
+     * happened. Both cases fail with {@code Code: 60 UNKNOWN_TABLE} -- measured
+     * on 22.8.21.38 -- after which the DDL is abandoned, leaving silent schema
+     * drift. Dropping a table that is already gone is the desired end state.</p>
      */
-    public static final String DROP_TABLE = "DROP TABLE";
+    // DESTRUCTIVE: a template string, not an executed statement. It renders the
+    // drop the SOURCE database already performed and that Debezium is
+    // replicating; the connector never originates one. Blast radius is the
+    // single mirrored table, and IF EXISTS only narrows it.
+    public static final String DROP_TABLE = "DROP TABLE IF EXISTS";
 
     /**
      * Template for creating a database if it does not exist, e.g.

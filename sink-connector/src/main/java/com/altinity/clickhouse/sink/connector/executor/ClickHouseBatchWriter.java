@@ -553,7 +553,11 @@ public class ClickHouseBatchWriter {
                         partitionToOffsetMap, this.config, tableName,
                         writer.getDatabaseName(), writer.getConnection(),
                         writer.getColumnNameToDataTypeMap(),
-                        writer.getReplacingMergeTreeDeleteColumn());
+                        writer.getReplacingMergeTreeDeleteColumn(),
+                        // Publish any refresh onto the writer: step 2 below
+                        // binds parameters from writer.getColumnNameToDataTypeMap(),
+                        // so grouping and binding have to read the same map.
+                        writer::refreshColumnNameToDataTypeMap);
         BlockMetaData bmd = new BlockMetaData();
         long maxBufferSize = this.config.getLong(
                 ClickHouseSinkConnectorConfigVariables.

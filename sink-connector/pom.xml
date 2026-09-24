@@ -242,8 +242,15 @@
             </plugins>
         </pluginManagement>
 
-        <!-- Define test source directory -->
-        <testSourceDirectory>${project.basedir}/src/test</testSourceDirectory>
+        <!-- Test sources live under src/test/java. Pointing this at src/test
+             made javac compile every test class a second time with the leading
+             "java" directory as part of the package, so target/test-classes
+             also held java.com.altinity...*.class. Surefire loads every class
+             it finds while scanning, and the JVM rejects any package starting
+             with "java", so the scan died with
+             "SecurityException: Prohibited package name: java.com.altinity..."
+             and NO test in this module ever ran. -->
+        <testSourceDirectory>${project.basedir}/src/test/java</testSourceDirectory>
 
     </build>
     <dependencies>

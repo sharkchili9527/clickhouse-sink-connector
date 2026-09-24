@@ -765,6 +765,14 @@ public class DebeziumChangeEventCapture {
         // Check if configuration is set to retry DDL
         String retryDDL = props.getProperty(SinkConnectorLightWeightConfig.DDL_RETRY.toString());
         String errorTableName = props.getProperty(ClickHouseSinkConnectorConfigVariables.ERROR_TABLE_NAME.toString());
+        if (errorTableName == null || errorTableName.isEmpty()) {
+            // props carries only what the user wrote in config.yml, so an
+            // unconfigured deployment leaves this null and the INSERT below
+            // would target "system.null" even though createErrorTable had just
+            // built the table under its configured default. Resolve through the
+            // config so both halves agree.
+            errorTableName = config.getString(ClickHouseSinkConnectorConfigVariables.ERROR_TABLE_NAME.toString());
+        }
         boolean retryDDLProperty = false;
         if (retryDDL != null && retryDDL.equalsIgnoreCase("true")) {
             retryDDLProperty = true;

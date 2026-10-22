@@ -759,7 +759,10 @@ public class ClickHouseBatchRunnable implements Runnable {
                         // Publish any refresh onto the writer: step 2 below
                         // binds parameters from writer.getColumnNameToDataTypeMap(),
                         // so grouping and binding have to read the same map.
-                        writer::refreshColumnNameToDataTypeMap);
+                        writer::refreshColumnNameToDataTypeMap,
+                        // Lets grouping keep only the last image per key for
+                        // ReplacingMergeTree targets (same-_version race).
+                        writer.getEngine(), writer.getSortingKeyColumns());
         BlockMetaData bmd = new BlockMetaData();
         long maxBufferSize = this.config.getLong(
                 ClickHouseSinkConnectorConfigVariables.

@@ -125,6 +125,34 @@ public class GroupInsertQueryWithBatchRecords {
             Map<String, String> columnNameToDataTypeMap,
             String replacingMergeTreeDeleteColumn,
             SchemaRefresher schemaRefresher) {
+        return groupQueryWithRecords(records, queryToRecordsMap,
+                partitionToOffsetMap, config, tableName, databaseName,
+                connection, columnNameToDataTypeMap,
+                replacingMergeTreeDeleteColumn, schemaRefresher, null, null);
+    }
+
+    /**
+     * Same as above, plus the target table's engine and sorting key. For a
+     * ReplacingMergeTree target outside replication-history mode, only the last
+     * image per primary key within the batch is written -- see
+     * {@link LatestImagePerKeyCollapser}. A null engine leaves the batch as is.
+     *
+     * @param engine            target table engine, or null if unknown.
+     * @param sortingKeyColumns target table sorting-key columns, or null.
+     * @return true if grouping is successful; false otherwise.
+     */
+    public boolean groupQueryWithRecords(
+            List<ClickHouseStruct> records,
+            Map<MutablePair<String, Map<String, Integer>>,
+                    List<ClickHouseStruct>> queryToRecordsMap,
+            Map<TopicPartition, Long> partitionToOffsetMap,
+            ClickHouseSinkConnectorConfig config,
+            String tableName, String databaseName, Connection connection,
+            Map<String, String> columnNameToDataTypeMap,
+            String replacingMergeTreeDeleteColumn,
+            SchemaRefresher schemaRefresher,
+            DBMetadata.TABLE_ENGINE engine,
+            List<String> sortingKeyColumns) {
         boolean result = false;
 
         // Refresh the column metadata ONCE PER BATCH, not once per record.
@@ -146,18 +174,34 @@ public class GroupInsertQueryWithBatchRecords {
                     columnNameToDataTypeMap);
         }
 
-        // Co4 = {ClickHouseStruct@9220} de block to create a Map of Query ->
-        // list of records so that all records belonging to the same query
-        // can be inserted as a batch.
-        Iterator iterator = records.iterator();
-        while (iterator.hasNext()) {
-            ClickHouseStruct record = (ClickHouseStruct) iterator.next();
+        // Offsets are tracked over EVERY record, including the ones the
+        // collapse below drops: they were consumed and are covered by this
+        // batch's write.
+        for (ClickHouseStruct record : records) {
             if (record != null && record.getKafkaPartition() != null &&
                     record.getTopic() != null) {
                 updatePartitionOffsetMap(partitionToOffsetMap,
                         record.getKafkaPartition(), record.getTopic(),
                         record.getKafkaOffset());
             }
+        }
+
+        List<ClickHouseStruct> recordsToWrite = records;
+        if (isReplacingMergeTree(engine) && !config.getBoolean(
+                ClickHouseSinkConnectorConfigVariables.REPLICATION_HISTORY_ENABLE.toString())) {
+            recordsToWrite = LatestImagePerKeyCollapser.collapse(records, sortingKeyColumns);
+            if (recordsToWrite.size() != records.size()) {
+                log.debug("Table {}: kept the last image per key, {} of {} records written",
+                        tableName, recordsToWrite.size(), records.size());
+            }
+        }
+
+        // Co4 = {ClickHouseStruct@9220} de block to create a Map of Query ->
+        // list of records so that all records belonging to the same query
+        // can be inserted as a batch.
+        Iterator iterator = recordsToWrite.iterator();
+        while (iterator.hasNext()) {
+            ClickHouseStruct record = (ClickHouseStruct) iterator.next();
             boolean enableSchemaEvolution = config.getBoolean(
                     ClickHouseSinkConnectorConfigVariables.ENABLE_SCHEMA_EVOLUTION
                             .toString());
@@ -223,15 +267,16 @@ public class GroupInsertQueryWithBatchRecords {
                         continue;
                 }
                                 
-                if (record.getBeforeModifiedFields() != null) {
+                // One INSERT per UPDATE, over the union of before/after
+                // non-null columns. Grouping it under both column sets wrote
+                // the after image twice with the same _version, once without
+                // the columns the UPDATE had just filled in, and that copy won
+                // whenever its INSERT happened to run last -- see
+                // ClickHouseStruct#getUpdateFields().
+                List<Field> updateFields = record.getUpdateFields();
+                if (updateFields != null) {
                     result = updateQueryToRecordsMap(record,
-                            record.getBeforeModifiedFields(), queryToRecordsMap,
-                            tableName, config, columnNameToDataTypeMap,
-                            replacingMergeTreeDeleteColumn);
-                }
-                if (record.getAfterModifiedFields() != null) {
-                    result = updateQueryToRecordsMap(record,
-                            record.getAfterModifiedFields(), queryToRecordsMap,
+                            updateFields, queryToRecordsMap,
                             tableName, config, columnNameToDataTypeMap,
                             replacingMergeTreeDeleteColumn);
                 }
@@ -241,6 +286,14 @@ public class GroupInsertQueryWithBatchRecords {
             }
         }
         return result;
+    }
+
+    /**
+     * Whether the engine is a (Replicated)ReplacingMergeTree.
+     */
+    private static boolean isReplacingMergeTree(DBMetadata.TABLE_ENGINE engine) {
+        return engine == DBMetadata.TABLE_ENGINE.REPLACING_MERGE_TREE
+                || engine == DBMetadata.TABLE_ENGINE.REPLICATED_REPLACING_MERGE_TREE;
     }
 
     /**

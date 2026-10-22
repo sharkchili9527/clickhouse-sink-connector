@@ -410,6 +410,38 @@ public class ClickHouseStruct {
     }
 
     /**
+     * Columns an UPDATE has to write: every column that is non-null in the
+     * before image OR in the after image, in schema order.
+     *
+     * <p>Grouping an UPDATE once under its before-image columns and once under
+     * its after-image columns -- the previous behaviour -- produced two INSERTs
+     * with the same {@code _version} but different column lists. An UPDATE that
+     * fills in a NULL column (gen_id NULL -> 'G1') therefore also wrote a copy
+     * of its after image WITHOUT that column, ClickHouse filled in the column
+     * DEFAULT, and whichever INSERT ran last won the ReplacingMergeTree tie.
+     * Taking the union keeps both kinds of change in a single row: a NULL being
+     * filled in (non-null only after) and a value being cleared to NULL
+     * (non-null only before, bound as NULL rather than left to the DEFAULT).</p>
+     *
+     * @return the union field list, or {@code afterModifiedFields} when there is
+     *         no before image.
+     */
+    public List<Field> getUpdateFields() {
+        if (this.afterStruct == null || this.beforeStruct == null) {
+            return this.afterModifiedFields;
+        }
+        List<Field> fields = new ArrayList<>();
+        for (Field f : this.afterStruct.schema().fields()) {
+            Field beforeField = this.beforeStruct.schema().field(f.name());
+            if (this.afterStruct.get(f) != null
+                    || (beforeField != null && this.beforeStruct.get(beforeField) != null)) {
+                fields.add(f);
+            }
+        }
+        return fields;
+    }
+
+    /**
      * Function to get additional kafka metadata not stored in SinkRecord.
      *
      * @param convertedValue Map of metadata fields extracted from

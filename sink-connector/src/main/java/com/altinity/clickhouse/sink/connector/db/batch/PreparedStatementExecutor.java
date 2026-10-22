@@ -326,8 +326,11 @@ public class PreparedStatementExecutor {
                         // includes deleted_time, and it retires the old version itself.
                         else if (replicationHistoryHandler == null && isReplacingMergeTree(engine)
                                 && updateRelocatesSortingKey(record)) {
+                            // Bound over the same union column list the UPDATE
+                            // was grouped by: a column NULL in the before image
+                            // still has a placeholder and must get an explicit NULL.
                             fieldMapper.insertTombstonePreparedStatement(entry.getKey().right, ps,
-                                    record.getBeforeModifiedFields(), record, record.getBeforeStruct(),
+                                    record.getUpdateFields(), record, record.getBeforeStruct(),
                                     config, columnToDataTypeMap, engine, tableName);
                             ps.addBatch();
                         }
@@ -346,7 +349,11 @@ public class PreparedStatementExecutor {
                             );
                             updateRecord = true;
                         } else {
-                            fieldMapper.insertPreparedStatement(entry.getKey().right, ps, record.getAfterModifiedFields(), record, record.getAfterStruct(),
+                            // getUpdateFields(), not getAfterModifiedFields():
+                            // the INSERT was built over before/after non-null
+                            // columns, so a column cleared to NULL by this UPDATE
+                            // has a placeholder and is bound as NULL here.
+                            fieldMapper.insertPreparedStatement(entry.getKey().right, ps, record.getUpdateFields(), record, record.getAfterStruct(),
                                     false, config, columnToDataTypeMap, engine, tableName);
                         }
                     } else {

@@ -149,12 +149,15 @@ public class GroupInsertQueryHistoryMultiRowTest {
     }
 
     /**
-     * Regression guard for the standard flow: with history mode DISABLED an
-     * UPDATE is still split into before and after, so 20 updates yield 40 rows.
-     * This branch was never affected and must stay unchanged.
+     * Standard flow (history mode DISABLED): every UPDATE is grouped exactly
+     * once, so 20 updates yield 20 rows. It used to be grouped under its before
+     * AND its after column set (40 rows), which wrote the after image twice with
+     * the same _version and, when the column sets differed, let a copy missing
+     * the columns the UPDATE had just filled in win -- see
+     * UpdateNullFillColumnLossTest.
      */
     @Test
-    public void standardModeStillSplitsUpdateIntoBeforeAndAfter() {
+    public void standardModeGroupsEachUpdateOnce() {
         List<ClickHouseStruct> records = new ArrayList<>();
         for (int id = 1; id <= 20; id++) {
             records.add(updateRecord(id, id));
@@ -167,7 +170,7 @@ public class GroupInsertQueryHistoryMultiRowTest {
                 new ClickHouseSinkConnectorConfig(new HashMap<>()),
                 TABLE, DB, null, columns());
 
-        Assert.assertEquals("standard mode must still emit before+after per UPDATE",
-                40, groupedRecordCount(grouped));
+        Assert.assertEquals("standard mode must group each UPDATE exactly once",
+                20, groupedRecordCount(grouped));
     }
 }

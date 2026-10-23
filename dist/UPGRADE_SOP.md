@@ -115,7 +115,7 @@ SELECT count() FROM <CK库>.<表> FINAL WHERE _sign = 1 AND <列> IS NULL;
 ```
 
 以 SIT 的 `tb_campaign` 为例，修复前 `gen_id` 两边是 0 / 843，修复后两边都应为 0；
-`search_text`、`total_time` 同理。之前的 `check-841.sh` 再跑一遍，差异数应为 0。
+`search_text`、`total_time` 同理。之前用来比对差异的脚本再跑一遍，差异数应为 0。
 
 ## 6. 回滚（只在第 4 步验收不通过时做）
 

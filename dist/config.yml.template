@@ -11,7 +11,7 @@
 #   3) 本文件 sink.connector.max.queue.size  4) 本文件 max.queue.size.in.bytes
 # 不要只改一边。
 #
-# 本模板的吞吐与监控取值与生产任务 ota-stat-prod 的现网配置一致，
+# 本模板的吞吐与监控取值与生产任务 <TOPIC_PREFIX_PROD> 的现网配置一致，
 # 已在 4G 容器 + 150 万行场景实测；换环境时优先只改连接信息与表清单。
 #
 # 另外 docker-compose.yml 里挂载的 log4j2.xml 不要删：镜像内 shade 进去的那份是

@@ -744,7 +744,7 @@ JAVA_HOME=<JDK17> ./mvnw -o -pl sink-connector-lightweight -am test \
 - `sink-connector` 全部单测 302 个（含 Docker）：全过。
 - 与写入路径相关的集成测试：`UpdateNullFillSameTransactionIT`、`MultipleUpdatesWSameTimestampIT`、
   `IsDeletedColumnsIT`、`DatabaseOverrideRRMTIT`、`ReplicatedRMTIT`、`AlterTableAddColumnRaceIT` 全过。
-- `CreateTableDataTypesIT`、`AlterTableAddColumnIT`、`TruncateTableIT`、`TableOperationsIT` 失败，
+- `CreateTableDataTypesIT`、`AlterTableAddColumnIT`、`TruncateTableIT`、`TableOperationsIT`、`MySQLDemoIT` 失败，
   但在修复前的代码上**以相同断言、相同异常失败**，属于既有问题（原因未单独排查），
   不是 `-6` 引入的。
 

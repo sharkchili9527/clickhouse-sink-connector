@@ -2,7 +2,7 @@
 # 针对 141 万行 / 单表占绝大多数数据 的全量 + 增量场景调优。
 # 用法：复制成 config.yml，填好下面 <> 占位符，用 docker-compose.yml 挂载进容器的 /config.yml。
 #
-# 本模板对应的连接器镜像：clickhouse_debezium_embedded:ck22.8-fix-20260904-5
+# 本模板对应的连接器镜像：clickhouse_debezium_embedded:ck22.8-fix-20261022-6
 # 目标 ClickHouse：22.8.x，单分片多副本，Replicated 引擎（必须配 cluster 宏）
 #
 # 下面的队列参数按【4G 容器】给值，和同目录 docker-compose.yml 的

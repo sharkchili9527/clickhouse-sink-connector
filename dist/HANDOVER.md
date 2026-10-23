@@ -1,6 +1,6 @@
 # 交付清单 — MySQL → ClickHouse 同步连接器
 
-镜像版本：`clickhouse_debezium_embedded:ck22.8-fix-20260904-5`（linux/amd64）
+镜像版本：`clickhouse_debezium_embedded:ck22.8-fix-20261022-6`（linux/amd64）
 
 接手人按本清单从上到下勾一遍即可独立部署与运维，不需要再问开发。
 部署细节、监控接入、巡检、故障处置、重灌恢复全部在 `README.md`，本文件只做清单与边界。
@@ -11,7 +11,7 @@
 
 | 文件 | 必需 | 必须挂载 | 用途 |
 |---|:--:|:--:|---|
-| `clickhouse_debezium_embedded-ck22.8-fix-20260904-5-amd64.tar.gz` | ✅ | — | 镜像离线包，`docker load` 导入 |
+| `clickhouse_debezium_embedded-ck22.8-fix-20261022-6-amd64.tar.gz` | ✅ | — | 镜像离线包，`docker load` 导入 |
 | `docker-compose.yml` | ✅ | — | 部署编排（内存 / 日志驱动 / 挂载 / javaagent） |
 | `config.yml`（从 `config.yml.template` 生成） | ✅ | ✅ `/config.yml` | 连接器配置 |
 | `log4j2.xml` | ✅ | ✅ `/log4j2.xml` | 日志级别。不挂载则走镜像内置 DEBUG |
@@ -29,7 +29,7 @@
 ### 校验和
 
 ```
-6156d8d102d45173d1f7c01143a9d94b36f954d8d88ba1a740d0adab1f3ea8a7  clickhouse_debezium_embedded-ck22.8-fix-20260904-5-amd64.tar.gz
+6156d8d102d45173d1f7c01143a9d94b36f954d8d88ba1a740d0adab1f3ea8a7  clickhouse_debezium_embedded-ck22.8-fix-20261022-6-amd64.tar.gz
 e20b324217f2be4e3a7316c19e5635d57066e4e3e1b9fe97bf1c162f98122776  app.jar
 5c8b62a4e63d9873e285e2f03db251e94422f7491802634d5cba6ad9a6262831  sink-connector-client
 8b67ed40485d475648c36d11d21464b484406f85faf912b3363f71a6a7861320  jmx_prometheus_javaagent-0.20.0.jar
@@ -47,12 +47,12 @@ shasum -a 256 -c <<< "<上面对应行>"
 ## 2. 导入后自检
 
 ```bash
-gunzip -c clickhouse_debezium_embedded-ck22.8-fix-20260904-5-amd64.tar.gz | docker load
+gunzip -c clickhouse_debezium_embedded-ck22.8-fix-20261022-6-amd64.tar.gz | docker load
 
-docker image inspect clickhouse_debezium_embedded:ck22.8-fix-20260904-5 --format '{{.Architecture}}/{{.Os}}'
+docker image inspect clickhouse_debezium_embedded:ck22.8-fix-20261022-6 --format '{{.Architecture}}/{{.Os}}'
 #   期望 amd64/linux
-docker run --rm --entrypoint md5sum clickhouse_debezium_embedded:ck22.8-fix-20260904-5 /app.jar
-#   期望 d8c2e7607ac53ab2684e75a11e15c835
+docker run --rm --entrypoint md5sum clickhouse_debezium_embedded:ck22.8-fix-20261022-6 /app.jar
+#   期望 b261ff8932798c4b6ed45ccb1e8ddc99
 ```
 
 起容器后再看这两条：

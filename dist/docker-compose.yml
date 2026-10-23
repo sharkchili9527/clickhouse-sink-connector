@@ -1,14 +1,14 @@
 # MySQL -> ClickHouse 同步任务（docker 部署）
 #
 # 前置：
-#   1) 把镜像 tar 导入：gunzip -c clickhouse_debezium_embedded-ck22.8-fix-20260904-5-amd64.tar.gz | docker load
+#   1) 把镜像 tar 导入：gunzip -c clickhouse_debezium_embedded-ck22.8-fix-20261022-6-amd64.tar.gz | docker load
 #   2) cp config.yml.template config.yml，填好所有 <> 占位符
 #   3) docker compose up -d
 #
 # 目标机必须是 linux/amd64。
 services:
   connector:
-    image: clickhouse_debezium_embedded:ck22.8-fix-20260904-5
+    image: clickhouse_debezium_embedded:ck22.8-fix-20261022-6
     container_name: connector
     restart: unless-stopped
     # 与 MySQL / ClickHouse 同网段直连；换成端口映射也可以，

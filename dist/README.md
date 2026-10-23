@@ -1,12 +1,12 @@
 # 产出目录说明
 
-对应连接器版本：`clickhouse_debezium_embedded:ck22.8-fix-20260904-5`（linux/amd64）
+对应连接器版本：`clickhouse_debezium_embedded:ck22.8-fix-20261022-6`（linux/amd64）
 
 ## 部署用
 
 | 文件 | 用途 |
 |---|---|
-| `clickhouse_debezium_embedded-ck22.8-fix-20260904-5-amd64.tar.gz` | 镜像离线包，`docker load` 导入 |
+| `clickhouse_debezium_embedded-ck22.8-fix-20261022-6-amd64.tar.gz` | 镜像离线包，`docker load` 导入 |
 | `docker-compose.yml` | 部署编排，已带内存/日志驱动/挂载配置 |
 | `config.yml.template` | 连接器配置模板，按 141 万行场景 + **4G 容器**调优，填完 `<>` 占位符改名成 `config.yml`。队列参数与 `docker-compose.yml` 的 `-Xmx2g` / `mem_limit 3500m` 配套，换内存档位要四处一起改（模板头部有说明） |
 | `log4j2.xml` | 日志配置，必须挂载。镜像内置的是 DEBUG 级别，会把每条 INSERT 的 HTTP 报文全打出来，快照慢 18%、日志 503MB |
@@ -34,13 +34,13 @@
 ## 部署步骤
 
 ```bash
-gunzip -c clickhouse_debezium_embedded-ck22.8-fix-20260904-5-amd64.tar.gz | docker load
+gunzip -c clickhouse_debezium_embedded-ck22.8-fix-20261022-6-amd64.tar.gz | docker load
 
 # 确认拿到的是这一版（架构和 jar 都要对得上）
-docker image inspect clickhouse_debezium_embedded:ck22.8-fix-20260904-5 --format '{{.Architecture}}/{{.Os}}'
+docker image inspect clickhouse_debezium_embedded:ck22.8-fix-20261022-6 --format '{{.Architecture}}/{{.Os}}'
 #   期望 amd64/linux
-docker run --rm --entrypoint md5sum clickhouse_debezium_embedded:ck22.8-fix-20260904-5 /app.jar
-#   期望 d8c2e7607ac53ab2684e75a11e15c835
+docker run --rm --entrypoint md5sum clickhouse_debezium_embedded:ck22.8-fix-20261022-6 /app.jar
+#   期望 b261ff8932798c4b6ed45ccb1e8ddc99
 
 cp config.yml.template config.yml
 vi config.yml            # 填 <MYSQL_HOST> / <CK_HOST> / 账号口令 / 表清单 等

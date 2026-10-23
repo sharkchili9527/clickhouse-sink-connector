@@ -1,6 +1,6 @@
 # DML / DDL 回归测试 SOP
 
-适用产出：`clickhouse_debezium_embedded:ck22.8-fix-20260904-5`（本目录）
+适用产出：`clickhouse_debezium_embedded:ck22.8-fix-20261022-6`（本目录）
 
 本文档是给**执行者**看的操作手册，每一步都给出「要跑的语句 → 期望结果 → 判定标准」。
 执行者不需要读连接器源码，但**必须逐条按顺序执行，并且不能跳过第 8 节的禁止清单**。
@@ -67,7 +67,7 @@ ssh root@<DEV_HOST>        # 免密，密钥在本机 本机 home 下
 
 | 容器名 | 镜像 | 说明 |
 |---|---|---|
-| `connector` | `clickhouse_debezium_embedded:ck22.8-fix-20260904-5` | 被测对象。`/app.jar` md5 = `d8c2e7607ac53ab2684e75a11e15c835` |
+| `connector` | `clickhouse_debezium_embedded:ck22.8-fix-20261022-6` | 被测对象。`/app.jar` md5 = `b261ff8932798c4b6ed45ccb1e8ddc99` |
 | `clickhouse` | `clickhouse/clickhouse-server:22.8` | 副本 1 |
 | `zookeeper` | `zookeeper:3.8` | CK 的 ZK |
 | `mycli` | `mysql:8.0` | 只是个 mysql 客户端容器（`--entrypoint sleep infinity`），宿主机没装 mysql |
@@ -80,7 +80,7 @@ docker run -d --name connector --network host --restart unless-stopped \
   --log-driver json-file --log-opt max-size=200m --log-opt max-file=2 \
   -v /data/connector/config.yml:/config.yml:ro \
   -v /data/connector/log4j2.xml:/log4j2.xml:ro \
-  clickhouse_debezium_embedded:ck22.8-fix-20260904-5
+  clickhouse_debezium_embedded:ck22.8-fix-20261022-6
 ```
 
 `mycli` 不在的话这样起：
@@ -137,7 +137,7 @@ ck(){ docker exec clickhouse clickhouse-client --password "$CK_PWD" --multiquery
 | `probe_create.sh c1` / `c2` | C 组 CREATE TABLE 的四种情形（未订阅 / 已订阅 / 先建表后加白名单 / CTAS） |
 | `regress_selfheal.sh` | D 组的手工版旧脚本，已被 `regress_d.sh` 取代，复测用不上 |
 | `probe_special_ident.sh <镜像tag>` | **F 组一键跑完并打印每条耗时**，独立源库/目标库，跑完自动清理 |
-| `regress_d.sh [表名]` | **D 组一键跑完并自动判定**，独立实例 + `-5` 镜像，不停主连接器，跑完自动清理 |
+| `regress_d.sh [表名]` | **D 组一键跑完并自动判定**，独立实例 + `-5` 镜像，不停主连接器，跑完自动清理。**测 `-6` 前先把脚本里的镜像 tag 改成 `ck22.8-fix-20261022-6`** |
 | `ab_drift.sh` / `ab_drift2b.sh` / `ab_drift3.sh` / `ab_drift4.sh` | D 组的历史 A/B 脚本，用来对比不同 jar，复测用不上 |
 | `ddl_probe.sh <类别>` | 交互式演示脚本（给人看的，每步停下来等回车） |
 | `ck_diag2.sh` | 查 `query_log` 里 SELECT/INSERT 条数比，用来确认跑的是不是新产出 |
@@ -146,7 +146,7 @@ ck(){ docker exec clickhouse clickhouse-client --password "$CK_PWD" --multiquery
 | `perf_variant.sh <标签> <秒数> <Xmx> [k=v...]` | 吞吐变体测试，可临时覆盖任意配置项 |
 | `final_cleanup.sh` | 清理演示残留 |
 
-**最省事的跑法**（四条命令跑完全部 24 项）：
+**最省事的跑法**（五条命令跑完 A~F 共 24 项，G 组 3 项见第 7.6 节）：
 
 ```bash
 source /root/ddl_probe.env
@@ -156,7 +156,8 @@ grep -c "超时未变化" /root/regA.log               # 必须是 0，然后看
 
 /root/probe_create.sh c1                          # C 组；C2 要验数据同步就按第 6 节加白名单重启后重跑
 /root/regress_d.sh                                # D 组，自动输出「通过/失败」
-/root/probe_special_ident.sh ck22.8-fix-20260904-5 # F 组，打印每条耗时，都要 <5000ms
+/root/probe_special_ident.sh ck22.8-fix-20261022-6 # F 组，打印每条耗时，都要 <5000ms
+# G 组没有现成脚本，按第 7.6 节用 my / ck 两个函数手工跑（约 3 分钟）
 ```
 
 ### 环境里保留的东西
@@ -188,13 +189,13 @@ grep -c "超时未变化" /root/regA.log               # 必须是 0，然后看
 
 ```bash
 # 1) 导入镜像
-gunzip -c clickhouse_debezium_embedded-ck22.8-fix-20260904-5-amd64.tar.gz | docker load
+gunzip -c clickhouse_debezium_embedded-ck22.8-fix-20261022-6-amd64.tar.gz | docker load
 
 # 2) 确认镜像是 amd64、且里面的 jar 是本次实测的那一份
-docker image inspect clickhouse_debezium_embedded:ck22.8-fix-20260904-5 --format '{{.Architecture}}/{{.Os}}'
+docker image inspect clickhouse_debezium_embedded:ck22.8-fix-20261022-6 --format '{{.Architecture}}/{{.Os}}'
 #   期望：amd64/linux
-docker run --rm --entrypoint md5sum clickhouse_debezium_embedded:ck22.8-fix-20260904-5 /app.jar
-#   期望：d8c2e7607ac53ab2684e75a11e15c835
+docker run --rm --entrypoint md5sum clickhouse_debezium_embedded:ck22.8-fix-20261022-6 /app.jar
+#   期望：b261ff8932798c4b6ed45ccb1e8ddc99
 
 # 3) 填配置
 cp config.yml.template config.yml
@@ -240,12 +241,13 @@ docker logs connector 2>&1 | grep -c "http-outgoing"
    - 日志出现 `batch will be retried on next scheduled run` 连续刷屏
    - 日志出现 `Code: 349`、`Code: 517`、`Code: 15 DUPLICATE_COLUMN`
 
-   在 `-5` 上这些都不该出现。跑旧产出时有两个已知例外：`-3` 及更早版本的 D 组会
+   在 `-6` 上这些都不该出现。跑旧产出时有两个已知例外：`-3` 及更早版本的 D 组会
    触发重试循环（按第 7 节末尾恢复）；`-4` 及更早版本的 F 组会出现
    `Timeout (30000ms) waiting for columns`，那不影响数据正确性，只是每条 DDL 多花 30 秒。
 
-6. **`Timeout (30000ms) waiting for columns` 在 `-5` 上必须一次都不出现。**
-   出现就说明跑的不是 `-5`，回第 2 节核对 `/app.jar` 的 md5。
+6. **`Timeout (30000ms) waiting for columns` 在 `-5`、`-6` 上必须一次都不出现。**
+   出现就说明跑的是 `-4` 或更早版本，回第 2 节核对 `/app.jar` 的 md5。
+7. **`Column index missing` 在 `-6` 上必须一次都不出现。** 出现就说明跑的是 `-5` 或更早版本。
 
 ---
 
@@ -589,7 +591,7 @@ DDL 本身是成功的，只是每条这样的语句都要多花 30 秒，后续
 **建议用隔离实例跑。** 开发环境里直接：
 
 ```bash
-source /root/ddl_probe.env && /root/probe_special_ident.sh ck22.8-fix-20260904-5
+source /root/ddl_probe.env && /root/probe_special_ident.sh ck22.8-fix-20261022-6
 ```
 
 它会建独立源库和目标库、跑完下面所有用例、打印每条耗时和判定、最后自动清理。
@@ -646,6 +648,96 @@ ALTER TABLE `<DB>`.`<TBL>` DROP COLUMN `space col`;
 | 三列混合 Round 3 | **30947 ms** | 1171 ms |
 | 等待器提取 | `[space]` | `[space col]` |
 | Timeout 次数 | 4 | 0 |
+
+## 7.6 G 组：UPDATE 回填 NULL 列（必测，**必须通过**）
+
+场景：业务先插入一行（某些列为 NULL），再 UPDATE 把这些列补上值，常见于「先建任务、
+再补生成编号」。`-5` 及之前的版本会把这条 UPDATE 写成两份 `_version` 相同的数据，
+其中一份缺少刚补上的列，于是 ClickHouse 里这几列可能停在 NULL / 默认值。
+`-6` 修好了。
+
+在 A 组那张测试表上直接跑，不需要隔离实例。先定好本轮后缀和开始时间：
+
+```bash
+source /root/ddl_probe.env
+T=$(date +%m%d%H%M%S)
+START=$(date -u +%Y-%m-%dT%H:%M:%S)    # G3 查日志用
+```
+
+> 下面的 SQL 都通过第 1.5 节的 `my` / `ck` 函数执行。函数用双引号包 SQL，
+> 所以**库表名不要加反引号**（反引号会被 shell 当成命令替换）。
+
+### G1 同一事务里：插入空值 → 补一列 → 再补一列
+
+```bash
+my "START TRANSACTION;
+INSERT INTO <DB>.<TBL> (biz_no,name,status,deleted,amount) VALUES ('g1-${T}','G1',1,NULL,NULL);
+UPDATE <DB>.<TBL> SET amount=12.34 WHERE biz_no='g1-${T}';
+UPDATE <DB>.<TBL> SET deleted=0 WHERE biz_no='g1-${T}';
+COMMIT;"
+```
+
+### G2 分两个事务：先插入空值，5 秒后一次补两列
+
+```bash
+my "INSERT INTO <DB>.<TBL> (biz_no,name,status,deleted,amount) VALUES ('g2-${T}','G2',1,NULL,NULL);"
+sleep 5
+my "UPDATE <DB>.<TBL> SET amount=56.78, deleted=0 WHERE biz_no='g2-${T}';"
+```
+
+等 10 秒后两边核对：
+
+```bash
+my "SELECT biz_no,name,status,deleted,amount FROM <DB>.<TBL> WHERE biz_no IN ('g1-${T}','g2-${T}') ORDER BY biz_no;"
+ck "SELECT biz_no,name,status,deleted,amount FROM <CK_DB>.<TBL> FINAL
+    WHERE _sign=1 AND biz_no IN ('g1-${T}','g2-${T}') ORDER BY biz_no FORMAT PrettyCompact;"
+```
+
+**判定 G1、G2**：两边逐字相等，即 `g1` 行 `deleted=0 / amount=12.34`，`g2` 行
+`deleted=0 / amount=56.78`。CK 里出现 `ᴺᵁᴸᴸ` 判失败。
+
+### G3 没有「同一版本写两份不同数据」（核心判定，必须在 G2 后 1 分钟内做）
+
+G1、G2 在 `-5` 上也可能碰巧通过：两份数据谁后写谁赢，顺序看运气。
+G3 直接查有没有写出两份，结果不受运气影响。
+
+```bash
+# a) 日志里没有缺列告警（应为 0）
+docker logs --since "$START" connector 2>&1 | grep -c "Column index missing"
+
+# b) 原始表（不加 FINAL）里同一行、同一 _version 没有两种内容（应为空）
+ck "SELECT biz_no, _version, count() AS n, uniqExact(tuple(name,status,deleted,amount)) AS variants
+    FROM <CK_DB>.<TBL> WHERE biz_no IN ('g1-${T}','g2-${T}')
+    GROUP BY biz_no, _version HAVING variants > 1 FORMAT PrettyCompact;"
+```
+
+**判定 G3**：a) 为 0，且 b) 返回空。
+
+> b) 要尽快查：ClickHouse 后台合并后，同版本的重复行会被合掉，在 `-5` 上也就看不到冲突了，
+> 但 a) 的日志计数不受合并影响。
+
+### `-5` 与 `-6` 的对照（跑旧产出时对号入座）
+
+本机端到端实测（MySQL 8.0.36 开 GTID + ClickHouse 22.8，120 行，覆盖 G1、G2 两种写法和「置 NULL」，
+只换代码）：
+
+| 指标 | `-5` | `-6` |
+|---|---:|---:|
+| `Column index missing` 次数 | **240** | **0** |
+| 同一 (主键, `_version`) 写出不同内容 | **90** | **0** |
+| FINAL 与 MySQL 逐列不一致的行 | 0（本机顺序碰巧对） | 0 |
+
+SIT 上 `-5` 的同类数据是错的：`tb_campaign` 843 行，日志 72 小时 350 次 `Column index missing`。
+
+### 开发者自测（可选，需要本机有 Docker）
+
+同一套场景有自动化版本，不依赖开发环境：
+
+```bash
+JAVA_HOME=<JDK17> ./mvnw -o -pl sink-connector-lightweight -am test \
+  -Dtest=UpdateNullFillSameTransactionIT -Dsurefire.failIfNoSpecifiedTests=false
+# 期望 Tests run: 1, Failures: 0
+```
 
 ---
 
@@ -717,7 +809,8 @@ SELECT count() = uniqExact(id) FROM <CK_DB>.<压测表>;
 ```sql
 -- MySQL：删掉本轮加的列、行、临时表
 ALTER TABLE `<DB>`.`<TBL>` DROP COLUMN a1_${T}, DROP COLUMN c2_${T}, DROP COLUMN drift_${T};
-DELETE FROM `<DB>`.`<TBL>` WHERE biz_no LIKE 'd-${T}%' OR biz_no LIKE 'drift-${T}%';
+DELETE FROM `<DB>`.`<TBL>` WHERE biz_no LIKE 'd-${T}%' OR biz_no LIKE 'drift-${T}%'
+   OR biz_no IN ('g1-${T}','g2-${T}');
 DROP TABLE IF EXISTS `<DB>`.`t_reg_${T}`;
 ```
 
@@ -749,8 +842,8 @@ SELECT name FROM system.tables WHERE database='system' AND name LIKE 't_reg%';
 把下表填满交回。**每一项都要贴 MySQL 和 ClickHouse 的原始输出**，不要只写「通过」。
 
 ```
-产出版本：clickhouse_debezium_embedded:ck22.8-fix-20260904-5
-/app.jar md5：____（期望 d8c2e7607ac53ab2684e75a11e15c835）
+产出版本：clickhouse_debezium_embedded:ck22.8-fix-20261022-6
+/app.jar md5：____（期望 b261ff8932798c4b6ed45ccb1e8ddc99）
 镜像架构：____（期望 amd64/linux）
 本轮后缀 T=____
 环境：用的是第 1.5 节的开发环境 / 自建环境（划掉不适用的）
@@ -785,9 +878,13 @@ F  特殊标识符          通过 / 失败
    F5 DROP `space col` 两副本均消失 __
    等待器提取到的列名 __（期望 `space col`，不是 `space`）
    Timeout(30000ms) 次数 __（期望 0）
+G  UPDATE 回填 NULL 列
+   G1 同事务插入后补列     通过 / 失败
+   G2 分事务插入后补列     通过 / 失败
+   G3 Column index missing 次数 __（期望 0）/ 同版本冲突行 __（期望 0）  通过 / 失败
 E  150 万行快照（可选）____ 秒，数据校验 一致 / 不一致
 
-24 项（A~D 加 F）中通过 __ 项。
+27 项（A~D 加 F、G）中通过 __ 项。
 是否触发第 3 节第 5 条的停止条件：是 / 否（如是，贴出日志）
 清理后两边列是否一致：是 / 否
 ```
